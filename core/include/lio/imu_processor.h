@@ -18,10 +18,8 @@ public:
     IMUProcessor(std::shared_ptr<kf::IESKF> kf, const ImuNoise &noise,
                  const Eigen::Matrix3d &rot_ext, const Eigen::Vector3d &pos_ext, bool align_gravity);
 
-    // Returns false while still initialising. On success `out` holds the de-skewed scan
-    // expressed in the LiDAR frame at scan end time.
+    // False while initialising. On success `out` is the scan de-skewed into the end-of-scan LiDAR frame.
     bool process(const MeasureGroup &meas, PointCloud::Ptr &out);
-    void reset();
 
 private:
     struct ImuPose

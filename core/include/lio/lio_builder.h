@@ -1,7 +1,4 @@
-// LiDAR-inertial odometry front end: IMU propagation + IESKF update against an
-// incremental voxel map. The LiDAR residual is selectable:
-//   POINT_TO_PLANE (default): kNN local plane fit (PCA) + Cauchy-robust point-to-plane distance.
-//   GICP: upstream iG-LIO voxel distribution-to-distribution residual (kept for A/B comparison).
+// LIO front end: IMU propagation + IESKF. Residual is point-to-plane (default) or GICP.
 #pragma once
 #include <memory>
 #include <string>
@@ -44,13 +41,11 @@ class LIOBuilder
 public:
     explicit LIOBuilder(const LIOParams &params);
 
-    // Returns true once a pose was estimated for this measurement.
     bool process(const MeasureGroup &meas);
     const kf::State &state() const { return kf_->x(); }
-    PointCloud::Ptr cloudLidar() const { return cloud_lidar_; } // de-skewed scan, LiDAR frame
-    PointCloud::Ptr cloudBody() const;                          // de-skewed scan, IMU/body frame
-    PointCloud::Ptr cloudWorld() const;                         // de-skewed scan, odom frame
-    size_t lastNumCorrespondences() const { return last_num_corr_; }
+    PointCloud::Ptr cloudLidar() const { return cloud_lidar_; }
+    PointCloud::Ptr cloudBody() const;
+    PointCloud::Ptr cloudWorld() const;
 
 private:
     void measurement(const kf::State &s, kf::MeasurementSystem &m);
@@ -86,7 +81,6 @@ private:
     Eigen::Matrix3d key_rot_ = Eigen::Matrix3d::Identity();
     Eigen::Vector3d key_pos_ = Eigen::Vector3d::Zero();
     size_t frame_count_ = 0;
-    size_t last_num_corr_ = 0;
 };
 
 Residual parseResidual(const std::string &s);

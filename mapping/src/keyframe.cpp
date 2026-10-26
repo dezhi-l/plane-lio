@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <Eigen/Geometry>
 #include <pcl/filters/voxel_grid.h>
+#include <pcl/registration/icp.h>
 
 namespace lio
 {
@@ -86,5 +87,22 @@ PointCloud::Ptr buildMap(const Keyframes &kfs, double leaf, size_t first, size_t
     for (size_t i = first; i <= last && i < kfs.size(); i++)
         *map += *transformCloud(*kfs[i].cloud, kfs[i].global_rot, kfs[i].global_pos);
     return leaf > 0 ? voxelDownsample(map, leaf) : map;
+}
+
+bool alignICP(const PointCloud::Ptr &src, const PointCloud::Ptr &tgt, const Eigen::Matrix4f &guess,
+              double max_corr, bool score_within_corr, Eigen::Matrix4d &T, double &fitness)
+{
+    pcl::IterativeClosestPoint<PointType, PointType> icp;
+    icp.setMaxCorrespondenceDistance(max_corr);
+    icp.setMaximumIterations(50);
+    icp.setTransformationEpsilon(1e-6);
+    icp.setEuclideanFitnessEpsilon(1e-6);
+    icp.setInputSource(src);
+    icp.setInputTarget(tgt);
+    PointCloud aligned;
+    icp.align(aligned, guess);
+    fitness = score_within_corr ? icp.getFitnessScore(max_corr) : icp.getFitnessScore();
+    T = icp.getFinalTransformation().cast<double>();
+    return icp.hasConverged();
 }
 } // namespace lio

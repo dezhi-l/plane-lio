@@ -1,6 +1,6 @@
 #include "lio/imu_processor.h"
-#include "lio/so3.h"
 #include <algorithm>
+#include <sophus/so3.hpp>
 #include <Eigen/Geometry>
 
 namespace lio
@@ -97,7 +97,7 @@ void IMUProcessor::undistort(const MeasureGroup &meas, PointCloud::Ptr &out)
         {
             const double dt = it_pcl->curvature / 1000.0 - head.offset;
             const Eigen::Vector3d p(it_pcl->x, it_pcl->y, it_pcl->z);
-            const Eigen::Matrix3d R_i = head.rot * so3::exp(tail.gyro * dt);
+            const Eigen::Matrix3d R_i = head.rot * Sophus::SO3d::exp(tail.gyro * dt).matrix();
             const Eigen::Vector3d t_i = head.pos + head.vel * dt + 0.5 * tail.acc * dt * dt;
             const Eigen::Vector3d pc = s.rot_ext.transpose() *
                 (s.rot.transpose() * (R_i * (s.rot_ext * p + s.pos_ext) + t_i - s.pos) - s.pos_ext);
@@ -121,11 +121,4 @@ bool IMUProcessor::process(const MeasureGroup &meas, PointCloud::Ptr &out)
     return true;
 }
 
-void IMUProcessor::reset()
-{
-    initialized_ = false;
-    init_count_ = 0;
-    mean_acc_.setZero();
-    mean_gyro_.setZero();
-}
 } // namespace lio

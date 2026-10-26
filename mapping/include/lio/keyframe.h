@@ -25,4 +25,7 @@ void writeTUM(const std::string &file, const std::vector<PoseStamped> &poses);
 PointCloud::Ptr voxelDownsample(const PointCloud::Ptr &in, double leaf);
 // Concatenate keyframe clouds in their global poses.
 PointCloud::Ptr buildMap(const Keyframes &kfs, double leaf, size_t first = 0, size_t last = size_t(-1));
+// PCL ICP. score_within_corr selects getFitnessScore(max_corr) vs the unlimited score.
+bool alignICP(const PointCloud::Ptr &src, const PointCloud::Ptr &tgt, const Eigen::Matrix4f &guess,
+              double max_corr, bool score_within_corr, Eigen::Matrix4d &T, double &fitness);
 } // namespace lio

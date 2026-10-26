@@ -1,351 +1,247 @@
 #include "lio/voxel_map.h"
+#include <algorithm>
+#include <cmath>
+#include <Eigen/SVD>
+
 namespace lio
 {
-    bool compare(std::pair<Eigen::Vector3d, double> &p1, std::pair<Eigen::Vector3d, double> &p2)
+namespace
+{
+constexpr size_t kHashP = 116101, kHashN = 10000000000ULL;
+
+size_t voxelHash(const Eigen::Vector3d &p, double inv)
+{
+    double q[3];
+    for (int i = 0; i < 3; ++i)
     {
-        return p1.second < p2.second;
+        q[i] = p[i] * inv;
+        if (q[i] < 0)
+            q[i] -= 1.0;
     }
-    size_t HashUtil::operator()(const Eigen::Vector3d &point)
+    const size_t x = static_cast<size_t>(q[0]), y = static_cast<size_t>(q[1]), z = static_cast<size_t>(q[2]);
+    return (((z * kHashP) % kHashN + y) * kHashP) % kHashN + x;
+}
+
+Eigen::Matrix3d fixedCov(const Eigen::Matrix3d &cov)
+{
+    Eigen::JacobiSVD<Eigen::Matrix3d> svd(cov, Eigen::ComputeFullU | Eigen::ComputeFullV);
+    const Eigen::Vector3d val(1, 1, 1e-3);
+    return svd.matrixU() * val.asDiagonal() * svd.matrixV().transpose();
+}
+} // namespace
+
+void VoxelMap::Grid::addPoint(const Eigen::Vector3d &point, bool insert)
+{
+    is_updated = false;
+    points_num++;
+    points_sum += point;
+    centroid = points_sum / static_cast<double>(points_num);
+    conv_sum += point * point.transpose();
+    if (points.size() >= max_num * 2 || !insert)
+        return;
+    points.push_back(point);
+}
+
+void VoxelMap::Grid::updateConv()
+{
+    if (is_updated)
+        return;
+    is_updated = true;
+    if (points_num < min_num)
     {
-        double loc_xyz[3];
-        for (size_t i = 0; i < 3; ++i)
+        is_valid = false;
+        return;
+    }
+    conv = (conv_sum - points_sum * centroid.transpose()) / (static_cast<double>(points_num) - 1.0);
+    is_valid = true;
+    conv = fixedCov(conv);
+}
+
+size_t VoxelMap::hash(const Eigen::Vector3d &p) const { return voxelHash(p, hash_inv_); }
+
+void VoxelMap::initDelta()
+{
+    // Same offsets and order as the old NEARBY_1 / 7 / 19 / 26 lists (26 includes the centre: 27 cells).
+    static constexpr int8_t off[] = {
+        0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1,
+        1, 1, 0, 1, -1, 0, 1, 0, 1, 1, 0, -1, 0, 1, 1, 0, 1, -1,
+        -1, 1, 0, -1, -1, 0, -1, 0, 1, -1, 0, -1, 0, -1, 1, 0, -1, -1,
+        1, 1, 1, 1, 1, -1, 1, -1, 1, 1, -1, -1, -1, 1, 1, -1, 1, -1, -1, -1, 1, -1, -1, -1};
+    const int n = mode_ == NEARBY_1 ? 1 : mode_ == NEARBY_7 ? 7 : mode_ == NEARBY_19 ? 19 : 27;
+    delta_.clear();
+    delta_.reserve(n);
+    for (int i = 0; i < n; ++i)
+        delta_.emplace_back(off[3 * i] * resolution_, off[3 * i + 1] * resolution_, off[3 * i + 2] * resolution_);
+}
+
+VoxelMap::VoxelMap(double resolution, size_t capacity, size_t grid_capacity, MODE mode)
+    : mode_(mode), resolution_(resolution), hash_inv_(1.0 / resolution), capacity_(capacity), grid_capacity_(grid_capacity)
+{
+    initDelta();
+}
+
+bool VoxelMap::isSameGrid(const Eigen::Vector3d &a, const Eigen::Vector3d &b) const
+{
+    auto bin = [&](double v) { return static_cast<int>(std::floor(v * resolution_inv_)); };
+    return bin(a.x()) == bin(b.x()) && bin(a.y()) == bin(b.y()) && bin(a.z()) == bin(b.z());
+}
+
+void VoxelMap::touch(Slot &slot)
+{
+    cache_.splice(cache_.begin(), cache_, slot.it);
+    slot.it = cache_.begin();
+}
+
+size_t VoxelMap::addCloud(const PointCloud::Ptr &cloud)
+{
+    size_t error_count = 0;
+    if (!cloud || cloud->empty())
+        return 0;
+    current_idx_.clear();
+    for (const auto &point : cloud->points)
+    {
+        const Eigen::Vector3d v(point.x, point.y, point.z);
+        const size_t idx = hash(v);
+        current_idx_.push_back(idx);
+        auto it = storage_.find(idx);
+        if (it == storage_.end())
         {
-            loc_xyz[i] = point[i] * resolution_inv_;
-            if (loc_xyz[i] < 0)
+            auto grid = std::make_shared<Grid>(grid_capacity_);
+            grid->addPoint(v, true);
+            cache_.push_front(idx);
+            storage_.insert({idx, Slot{cache_.begin(), grid}});
+            if (storage_.size() >= capacity_)
             {
-                loc_xyz[i] -= 1.0;
+                storage_.erase(cache_.back());
+                cache_.pop_back();
             }
+            continue;
         }
-        size_t x = static_cast<size_t>(loc_xyz[0]);
-        size_t y = static_cast<size_t>(loc_xyz[1]);
-        size_t z = static_cast<size_t>(loc_xyz[2]);
-
-        return ((((z)*hash_p_) % max_n_ + (y)) * hash_p_) % max_n_ + (x);
-    }
-
-    void Grid::setMinMax(size_t min_n, size_t max_n)
-    {
-        min_num = min_n;
-        max_num = max_n;
-    }
-
-    void Grid::updateConv()
-    {
-        if (is_updated)
-            return;
-        is_updated = true;
-        if (points_num < min_num)
+        Slot &slot = it->second;
+        if (!isSameGrid(slot.grid->centroid, v))
         {
-            is_valid = false;
-            return;
+            ++error_count;
+            cache_.erase(slot.it);
+            auto grid = std::make_shared<Grid>(grid_capacity_);
+            grid->addPoint(v, true);
+            cache_.push_front(idx);
+            slot.it = cache_.begin();
+            slot.grid = grid;
+            continue;
         }
-        conv = (conv_sum - points_sum * centroid.transpose()) / (static_cast<double>(points_num) - 1.0);
-        is_valid = true;
-        Eigen::JacobiSVD<Eigen::Matrix3d> svd(conv, Eigen::ComputeFullU | Eigen::ComputeFullV);
-        Eigen::Vector3d val(1, 1, 1e-3);
-        conv = svd.matrixU() * val.asDiagonal() * svd.matrixV().transpose();
-        // conv_inv = conv.inverse();
+        const size_t n = slot.grid->points_num;
+        if (n < 50)
+            slot.grid->addPoint(v, n < grid_capacity_);
+        touch(slot);
     }
+    for (size_t idx : current_idx_)
+        storage_[idx].grid->updateConv();
+    return error_count;
+}
 
-    void Grid::addPoint(Eigen::Vector3d &point, bool insert)
+bool VoxelMap::searchKNN(const Eigen::Vector3d &point, size_t k, double range, std::vector<Eigen::Vector3d> &results)
+{
+    std::vector<std::pair<Eigen::Vector3d, double>> cand;
+    const double r2 = range * range;
+    for (const auto &d : delta_)
     {
-        is_updated = false;
-        points_num++;
-        points_sum += point;
-        // centroid += ((point - centroid) / static_cast<double>(points_num));
-        centroid = points_sum / static_cast<double>(points_num);
-        conv_sum += (point * point.transpose());
-        if (points.size() >= max_num * 2 || !insert)
-            return;
-        points.push_back(point);
-    }
-
-    void VoxelMap::initializeDelta()
-    {
-        delta_.clear();
-        switch (mode_)
+        const Eigen::Vector3d q = point + d;
+        auto it = storage_.find(hash(q));
+        if (it == storage_.end() || !isSameGrid(q, it->second.grid->centroid))
+            continue;
+        for (const auto &p : it->second.grid->points)
         {
-        case MODE::NEARBY_1:
-            delta_.push_back(Eigen::Vector3d(0.0, 0.0, 0.0));
-            break;
-        case MODE::NEARBY_7:
-            delta_.push_back(Eigen::Vector3d(0.0, 0.0, 0.0));
-            delta_.push_back(Eigen::Vector3d(resolution_, 0.0, 0.0));
-            delta_.push_back(Eigen::Vector3d(-resolution_, 0.0, 0.0));
-            delta_.push_back(Eigen::Vector3d(0.0, resolution_, 0.0));
-            delta_.push_back(Eigen::Vector3d(0.0, -resolution_, 0.0));
-            delta_.push_back(Eigen::Vector3d(0.0, 0.0, resolution_));
-            delta_.push_back(Eigen::Vector3d(0.0, 0.0, -resolution_));
-            break;
-        case MODE::NEARBY_19:
-            delta_.push_back(Eigen::Vector3d(0.0, 0.0, 0.0));
-            delta_.push_back(Eigen::Vector3d(resolution_, 0.0, 0.0));
-            delta_.push_back(Eigen::Vector3d(-resolution_, 0.0, 0.0));
-            delta_.push_back(Eigen::Vector3d(0.0, resolution_, 0.0));
-            delta_.push_back(Eigen::Vector3d(0.0, -resolution_, 0.0));
-            delta_.push_back(Eigen::Vector3d(0.0, 0.0, resolution_));
-            delta_.push_back(Eigen::Vector3d(0.0, 0.0, -resolution_));
-            delta_.push_back(Eigen::Vector3d(resolution_, resolution_, 0.0));
-            delta_.push_back(Eigen::Vector3d(resolution_, -resolution_, 0.0));
-            delta_.push_back(Eigen::Vector3d(resolution_, 0.0, resolution_));
-            delta_.push_back(Eigen::Vector3d(resolution_, 0.0, -resolution_));
-            delta_.push_back(Eigen::Vector3d(0.0, resolution_, resolution_));
-            delta_.push_back(Eigen::Vector3d(0.0, resolution_, -resolution_));
-            delta_.push_back(Eigen::Vector3d(-resolution_, resolution_, 0.0));
-            delta_.push_back(Eigen::Vector3d(-resolution_, -resolution_, 0.0));
-            delta_.push_back(Eigen::Vector3d(-resolution_, 0.0, resolution_));
-            delta_.push_back(Eigen::Vector3d(-resolution_, 0.0, -resolution_));
-            delta_.push_back(Eigen::Vector3d(0.0, -resolution_, resolution_));
-            delta_.push_back(Eigen::Vector3d(0.0, -resolution_, -resolution_));
-            break;
-        default:
-            delta_.push_back(Eigen::Vector3d(0.0, 0.0, 0.0));
-            delta_.push_back(Eigen::Vector3d(resolution_, 0.0, 0.0));
-            delta_.push_back(Eigen::Vector3d(-resolution_, 0.0, 0.0));
-            delta_.push_back(Eigen::Vector3d(0.0, resolution_, 0.0));
-            delta_.push_back(Eigen::Vector3d(0.0, -resolution_, 0.0));
-            delta_.push_back(Eigen::Vector3d(0.0, 0.0, resolution_));
-            delta_.push_back(Eigen::Vector3d(0.0, 0.0, -resolution_));
-            delta_.push_back(Eigen::Vector3d(resolution_, resolution_, 0.0));
-            delta_.push_back(Eigen::Vector3d(resolution_, -resolution_, 0.0));
-            delta_.push_back(Eigen::Vector3d(resolution_, 0.0, resolution_));
-            delta_.push_back(Eigen::Vector3d(resolution_, 0.0, -resolution_));
-            delta_.push_back(Eigen::Vector3d(0.0, resolution_, resolution_));
-            delta_.push_back(Eigen::Vector3d(0.0, resolution_, -resolution_));
-            delta_.push_back(Eigen::Vector3d(-resolution_, resolution_, 0.0));
-            delta_.push_back(Eigen::Vector3d(-resolution_, -resolution_, 0.0));
-            delta_.push_back(Eigen::Vector3d(-resolution_, 0.0, resolution_));
-            delta_.push_back(Eigen::Vector3d(-resolution_, 0.0, -resolution_));
-            delta_.push_back(Eigen::Vector3d(0.0, -resolution_, resolution_));
-            delta_.push_back(Eigen::Vector3d(0.0, -resolution_, -resolution_));
-            delta_.push_back(Eigen::Vector3d(resolution_, resolution_, resolution_));
-            delta_.push_back(Eigen::Vector3d(resolution_, resolution_, -resolution_));
-            delta_.push_back(Eigen::Vector3d(resolution_, -resolution_, resolution_));
-            delta_.push_back(Eigen::Vector3d(resolution_, -resolution_, -resolution_));
-            delta_.push_back(Eigen::Vector3d(-resolution_, resolution_, resolution_));
-            delta_.push_back(Eigen::Vector3d(-resolution_, resolution_, -resolution_));
-            delta_.push_back(Eigen::Vector3d(-resolution_, -resolution_, resolution_));
-            delta_.push_back(Eigen::Vector3d(-resolution_, -resolution_, -resolution_));
-            break;
+            const double dist = (point - p).squaredNorm();
+            if (dist < r2)
+                cand.emplace_back(p, dist);
         }
     }
-
-    VoxelMap::VoxelMap(double resolution, size_t capacity, size_t grid_capacity, MODE mode)
-        : resolution_(resolution),
-          capacity_(capacity),
-          grid_capacity_(grid_capacity),
-          mode_(mode),
-          hash_util_(resolution)
-    {
-        initializeDelta();
-    }
-
-    bool VoxelMap::isSameGrid(const Eigen::Vector3d &p1, const Eigen::Vector3d &p2)
-    {
-        int hx_1 = floor(p1.x() * resolution_inv_);
-        int hy_1 = floor(p1.y() * resolution_inv_);
-        int hz_1 = floor(p1.z() * resolution_inv_);
-        int hx_2 = floor(p2.x() * resolution_inv_);
-        int hy_2 = floor(p2.y() * resolution_inv_);
-        int hz_2 = floor(p2.z() * resolution_inv_);
-
-        return ((hx_1 == hx_2) && (hy_1 == hy_2) && (hz_1 == hz_2));
-    }
-
-    size_t VoxelMap::addCloud(pcl::PointCloud<pcl::PointXYZINormal>::Ptr cloud)
-    {
-        size_t error_count = 0;
-        if (cloud->empty())
-            return 0;
-        current_idx_.clear();
-        for (pcl::PointXYZINormal &point : cloud->points)
-        {
-            Eigen::Vector3d point_vec(point.x, point.y, point.z);
-            size_t idx = hash_util_(point_vec);
-            current_idx_.push_back(idx);
-            auto iter = storage_.find(idx);
-            if (iter == storage_.end())
-            {
-                std::shared_ptr<Grid> grid = std::make_shared<Grid>(grid_capacity_);
-                grid->addPoint(point_vec, true);
-                cache_.push_front(idx);
-                storage_.insert({idx, {cache_.begin(), grid}});
-                if (storage_.size() >= capacity_)
-                {
-                    storage_.erase(cache_.back());
-                    cache_.pop_back();
-                }
-            }
-            else
-            {
-                if (!isSameGrid(iter->second.second->centroid, point_vec))
-                {
-                    error_count++;
-                    cache_.erase(iter->second.first);
-                    std::shared_ptr<Grid> grid = std::make_shared<Grid>(grid_capacity_);
-                    grid->addPoint(point_vec, true);
-                    cache_.push_front(idx);
-                    storage_[idx].first = cache_.begin();
-                    storage_[idx].second = grid;
-                }
-                else
-                {
-                    size_t point_in_grid = iter->second.second->points_num;
-                    if (point_in_grid < 50)
-                        iter->second.second->addPoint(point_vec, point_in_grid < grid_capacity_ ? true : false);
-                    cache_.splice(cache_.begin(), cache_, iter->second.first);
-                    storage_[idx].first = cache_.begin();
-                }
-            }
-        }
-        for (size_t &idx : current_idx_)
-        {
-            storage_[idx].second->updateConv();
-        }
-        return error_count;
-    }
-    void VoxelMap::reset(){
-        cache_.clear();
-        storage_.clear();
-    }
-
-    bool VoxelMap::searchKNN(const Eigen::Vector3d &point, size_t K, double range, std::vector<Eigen::Vector3d> &results)
-    {
-        std::vector<std::pair<Eigen::Vector3d, double>> candidates;
-        double range2 = range * range;
-        for (const Eigen::Vector3d &delta : delta_)
-        {
-            Eigen::Vector3d near_by = point + delta;
-            size_t hash_idx = hash_util_(near_by);
-            auto iter = storage_.find(hash_idx);
-            if (iter != storage_.end() && isSameGrid(near_by, iter->second.second->centroid))
-            {
-                for (Eigen::Vector3d &p : iter->second.second->points)
-                {
-                    double dist = (point - p).squaredNorm();
-                    if (dist < range2)
-                        candidates.emplace_back(p, dist);
-                }
-            }
-        }
-
-        if (candidates.empty())
-            return false;
-
-        if (candidates.size() > K)
-        {
-            std::nth_element(
-                candidates.begin(),
-                candidates.begin() + K - 1,
-                candidates.end(),
-                compare);
-            candidates.resize(K);
-        }
-        std::nth_element(candidates.begin(), candidates.begin(), candidates.end(), compare);
-
-        results.clear();
-
-        for (const auto &it : candidates)
-        {
-            results.emplace_back(it.first);
-        }
-        return true;
-    }
-
-    bool VoxelMap::getCentroidAndCovariance(size_t hash_idx, Eigen::Vector3d &centroid, Eigen::Matrix3d &cov)
-    {
-        auto iter = storage_.find(hash_idx);
-        if (iter != storage_.end() && iter->second.second->is_valid)
-        {
-            centroid = iter->second.second->centroid;
-            cov = iter->second.second->conv;
-            return true;
-        }
+    if (cand.empty())
         return false;
-    }
-
-    bool VoxelMap::getCentroidAndCovariance(const Eigen::Vector3d &point, Eigen::Vector3d &centroid, Eigen::Matrix3d &cov)
+    const auto closer = [](const auto &a, const auto &b) { return a.second < b.second; };
+    if (cand.size() > k)
     {
-        size_t idx = hash_util_(point);
-        return getCentroidAndCovariance(idx, centroid, cov);
+        std::nth_element(cand.begin(), cand.begin() + static_cast<std::ptrdiff_t>(k - 1), cand.end(), closer);
+        cand.resize(k);
     }
+    std::nth_element(cand.begin(), cand.begin(), cand.end(), closer);
+    results.clear();
+    for (const auto &c : cand)
+        results.push_back(c.first);
+    return true;
+}
 
-    void FastGrid::addPoint(const Eigen::Vector3d &point)
-    {
-        num += 1;
-        centroid += ((point - centroid) / static_cast<double>(num));
-    }
+bool VoxelMap::getCentroidAndCovariance(const Eigen::Vector3d &point, Eigen::Vector3d &centroid, Eigen::Matrix3d &cov)
+{
+    auto it = storage_.find(hash(point));
+    if (it == storage_.end() || !it->second.grid->is_valid)
+        return false;
+    centroid = it->second.grid->centroid;
+    cov = it->second.grid->conv;
+    return true;
+}
 
-    FastVoxelMap::FastVoxelMap(double resolution) : resolution_(resolution), hash_util_(resolution)
+FastVoxelMap::FastVoxelMap(double resolution) : resolution_(resolution), hash_inv_(1.0 / resolution)
+{
+    for (int x = -1; x <= 1; ++x)
+        for (int y = -1; y <= 1; ++y)
+            for (int z = -1; z <= 1; ++z)
+                range_.emplace_back(x * resolution_, y * resolution_, z * resolution_);
+}
+
+void FastVoxelMap::filter(const PointCloud::Ptr &cloud, std::vector<PointCov> &outs)
+{
+    outs.clear();
+    if (!cloud || cloud->empty())
+        return;
+    struct Bin
     {
-        search_range_.clear();
-        for (int x_gain = -1; x_gain <= 1; ++x_gain)
+        Eigen::Vector3d centroid = Eigen::Vector3d::Zero();
+        size_t num = 0;
+        void add(const Eigen::Vector3d &p)
         {
-            for (int y_gain = -1; y_gain <= 1; ++y_gain)
-            {
-                for (int z_gain = -1; z_gain <= 1; ++z_gain)
-                {
-                    search_range_.emplace_back(Eigen::Vector3d(x_gain * resolution_,
-                                                               y_gain * resolution_,
-                                                               z_gain * resolution_));
-                }
-            }
+            num += 1;
+            centroid += (p - centroid) / static_cast<double>(num);
         }
-    }
-
-    void FastVoxelMap::filter(pcl::PointCloud<pcl::PointXYZINormal>::Ptr cloud, std::vector<PointCov> &outs)
+    };
+    std::vector<Bin> bins;
+    std::unordered_map<size_t, size_t> index;
+    bins.reserve(cloud->size());
+    for (const auto &p : cloud->points)
     {
-
-        if (cloud->empty())
-            return;
-        outs.clear();
-        grid_array_.clear();
-        grid_map_.clear();
-        grid_array_.reserve(cloud->size());
-        for (pcl::PointXYZINormal &p : cloud->points)
+        const Eigen::Vector3d v(p.x, p.y, p.z);
+        const size_t id = voxelHash(v, hash_inv_);
+        auto it = index.find(id);
+        if (it == index.end())
         {
-            Eigen::Vector3d p_vec(p.x, p.y, p.z);
-            size_t idx = hash_util_(p_vec);
-            auto iter = grid_map_.find(idx);
-            if (iter == grid_map_.end())
-            {
-                std::shared_ptr<FastGrid> grid = std::make_shared<FastGrid>();
-                grid->addPoint(p_vec);
-                grid_map_.insert({idx, grid});
-                grid_array_.push_back(grid);
-            }
-            else
-            {
-                iter->second->addPoint(p_vec);
-            }
+            index.emplace(id, bins.size());
+            bins.push_back({});
+            bins.back().add(v);
         }
-
-        for (std::shared_ptr<FastGrid> &g : grid_array_)
-        {
-
-            Eigen::Vector3d points_sum = Eigen::Vector3d::Zero();
-            Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
-            size_t points_num = 0;
-            for (Eigen::Vector3d &r : search_range_)
-            {
-                Eigen::Vector3d near = g->centroid + r;
-                auto iter = grid_map_.find(hash_util_(near));
-                if (iter != grid_map_.end())
-                {
-                    points_sum += iter->second->centroid;
-                    cov += iter->second->centroid * iter->second->centroid.transpose();
-                    points_num += 1;
-                }
-            }
-            if (points_num >= 6)
-            {
-                Eigen::Vector3d centriod = points_sum / static_cast<double>(points_num);
-                cov = (cov - points_sum * centriod.transpose()) / (static_cast<double>(points_num) - 1.0);
-                Eigen::JacobiSVD<Eigen::Matrix3d> svd(cov, Eigen::ComputeFullU | Eigen::ComputeFullV);
-                Eigen::Vector3d values(1, 1, 1e-3);
-                cov = svd.matrixU() * values.asDiagonal() * svd.matrixV().transpose();
-            }
-            outs.emplace_back(g->centroid, cov);
-        }
+        else
+            bins[it->second].add(v);
     }
+    for (const Bin &g : bins)
+    {
+        Eigen::Vector3d sum = Eigen::Vector3d::Zero();
+        Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
+        size_t n = 0;
+        for (const auto &r : range_)
+        {
+            auto it = index.find(voxelHash(g.centroid + r, hash_inv_));
+            if (it == index.end())
+                continue;
+            const Eigen::Vector3d &c = bins[it->second].centroid;
+            sum += c;
+            cov += c * c.transpose();
+            ++n;
+        }
+        if (n >= 6)
+        {
+            const Eigen::Vector3d mu = sum / static_cast<double>(n);
+            cov = fixedCov((cov - sum * mu.transpose()) / (static_cast<double>(n) - 1.0));
+        }
+        outs.emplace_back(g.centroid, cov);
+    }
+}
 } // namespace lio

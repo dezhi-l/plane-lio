@@ -1,9 +1,9 @@
 #include "lio/lio_builder.h"
-#include "lio/so3.h"
-#include <iostream>
 #include <stdexcept>
+#include <sophus/so3.hpp>
 #include <Eigen/Eigenvalues>
 #include <Eigen/Dense>
+#include <Eigen/Geometry>
 
 namespace lio
 {
@@ -77,10 +77,9 @@ bool LIOBuilder::process(const MeasureGroup &meas)
     scan_filter_->filter(cloud_lidar_, scan_points_);
     kf_->update();
     frame_count_++;
-
-    // Insert into the local map on the first frames and then only at keyframes.
+    const Eigen::Matrix3d dR = state().rot.transpose() * key_rot_;
     const bool is_key = frame_count_ < 10 || cloud_lidar_->size() < 1000 ||
-                        so3::log(state().rot.transpose() * key_rot_).norm() > params_.key_rot_thresh ||
+                        Sophus::SO3d(Eigen::Quaterniond(dR).normalized()).log().norm() > params_.key_rot_thresh ||
                         (state().pos - key_pos_).norm() > params_.key_pos_thresh;
     if (is_key)
     {
@@ -103,8 +102,8 @@ void LIOBuilder::addJacobianExtrinsic(const kf::State &s, const Eigen::Vector3d 
                                       Eigen::Matrix<double, -1, 12> &J) const
 {
     // d(p_world)/d(rot_ext), d(p_world)/d(pos_ext); J currently holds n^T-weighting in cols 0..2.
-    const Eigen::MatrixXd A = J.leftCols<3>(); // = d r / d p_world
-    J.block(0, 6, J.rows(), 3) = -A * s.rot * s.rot_ext * so3::hat(p_lidar);
+    const Eigen::MatrixXd A = J.leftCols<3>();
+    J.block(0, 6, J.rows(), 3) = -A * s.rot * s.rot_ext * Sophus::SO3d::hat(p_lidar);
     J.block(0, 9, J.rows(), 3) = A * s.rot;
 }
 
@@ -129,7 +128,6 @@ void LIOBuilder::pointToPlane(const kf::State &s, kf::MeasurementSystem &m)
             pl.valid = fitPlane(nn, params_.plane_thresh, pl.normal, pl.d);
         }
     }
-    size_t num = 0;
     Eigen::Matrix<double, -1, 12> J(1, 12);
     for (int i = 0; i < n; i++)
     {
@@ -139,21 +137,17 @@ void LIOBuilder::pointToPlane(const kf::State &s, kf::MeasurementSystem &m)
         const Eigen::Vector3d pb = s.rot_ext * pl.point + s.pos_ext;
         const Eigen::Vector3d pw = s.rot * pb + s.pos;
         const double r = pl.normal.dot(pw) + pl.d;
-        if (std::fabs(r) > 5.0 * params_.p2plane_robust_delta) // hard outlier gate
+        if (std::fabs(r) > 5.0 * params_.p2plane_robust_delta)
             continue;
         J.setZero();
         J.block<1, 3>(0, 0) = pl.normal.transpose();
-        J.block<1, 3>(0, 3) = -pl.normal.transpose() * s.rot * so3::hat(pb);
+        J.block<1, 3>(0, 3) = -pl.normal.transpose() * s.rot * Sophus::SO3d::hat(pb);
         if (params_.extrinsic_est_en)
             addJacobianExtrinsic(s, pl.point, J);
         const double w = params_.p2plane_gain * cauchyWeight(r * r, params_.p2plane_robust_delta);
         m.H += J.transpose() * w * J;
         m.b += J.transpose() * w * r;
-        num++;
     }
-    last_num_corr_ = num;
-    if (num == 0)
-        std::cerr << "[lio] no valid point-to-plane correspondences\n";
 }
 
 void LIOBuilder::gicp(const kf::State &s, kf::MeasurementSystem &m)
@@ -175,31 +169,26 @@ void LIOBuilder::gicp(const kf::State &s, kf::MeasurementSystem &m)
         }
     }
     Eigen::Matrix<double, -1, 12> J(3, 12);
-    size_t num = 0;
     for (const GICPCorr &c : gicp_corr_)
     {
         const Eigen::Vector3d pb = s.rot_ext * c.mean_a + s.pos_ext;
         const Eigen::Vector3d pw = s.rot * pb + s.pos;
         const Eigen::Matrix3d RR = s.rot * s.rot_ext;
         const Eigen::Matrix3d omega = (c.cov_b + RR * c.cov_a * RR.transpose()).inverse();
-        const Eigen::Vector3d e = pw - c.mean_b; // sign flipped vs upstream together with J -> identical normal equations
+        const Eigen::Vector3d e = pw - c.mean_b; // sign flipped vs upstream, together with J, so the normal equations match
         const double chi2 = e.dot(omega * e);
         if (m.iter_num > 2 && chi2 > 7.815)
             continue;
         const Eigen::Vector3d rho = cauchyRho(chi2, 10.0);
         J.setZero();
         J.block<3, 3>(0, 0) = Eigen::Matrix3d::Identity();
-        J.block<3, 3>(0, 3) = -s.rot * so3::hat(pb);
+        J.block<3, 3>(0, 3) = -s.rot * Sophus::SO3d::hat(pb);
         if (params_.extrinsic_est_en)
             addJacobianExtrinsic(s, c.mean_a, J);
         const Eigen::Matrix3d info = params_.gicp_gain * (rho[1] * omega + 2.0 * rho[2] * omega * e * e.transpose() * omega);
         m.H += J.transpose() * info * J;
         m.b += params_.gicp_gain * rho[1] * J.transpose() * omega * e;
-        num++;
     }
-    last_num_corr_ = num;
-    if (num == 0)
-        std::cerr << "[lio] no valid GICP correspondences\n";
 }
 
 PointCloud::Ptr LIOBuilder::cloudBody() const

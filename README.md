@@ -1,17 +1,19 @@
 # plane-lio
 
+![LIO mapping, then a two-session map merge](docs/demo/preview.gif)
+
 LiDAR-inertial odometry + loop closure + multi-session map merge, as a small ROS-free C++ library
 with offline tools. Refactor of [liangheming/iG-LIO_SAM_LC](https://github.com/liangheming/iG-LIO_SAM_LC)
 (branch `refactor-p2plane`).
 
-Demo — LIO mapping, then a two-session map merge: [docs/demo/lio_to_merge.mp4](docs/demo/lio_to_merge.mp4)
+Full demo: [docs/demo/lio_to_merge.mp4](docs/demo/lio_to_merge.mp4)
 
 ## What changed vs upstream
 | | upstream | plane-lio |
 |---|---|---|
 | LIO residual | GICP (point-to-plane only for the first 20 keyframes) | **point-to-plane**: kNN (k=5) PCA plane fit + planarity check + Cauchy IRLS weight, gated; GICP kept as an A/B option (`lio.residual`) |
 | Structure | one ROS node mixing LIO, loop closure, localizer, FAST-LIO/ikd-tree duplicate builder | 3 modules: `core/` (LIO), `mapping/` (keyframes, loop closure, multi-session merge), `apps/` (offline executables) |
-| Dependencies | ROS1 Noetic, livox_ros_driver2, Sophus, GTSAM, PCL | Eigen, PCL, GTSAM, yaml-cpp, OpenMP (Sophus replaced by `core/include/lio/so3.h`) |
+| Dependencies | ROS1 Noetic, livox_ros_driver2, Sophus, GTSAM, PCL | Eigen, Sophus, PCL, GTSAM, yaml-cpp, OpenMP |
 | Config | `mapping.yaml` + `localize.yaml` + launch args | one file: `config/mid360.yaml` |
 | Bug fixes | — | IMU mid-point integration used `head.acc+head.acc`; IESKF convergence used signed `maxCoeff` |
 | Multi-session | — | `map_merge`: gravity-aligned (x,y,z,yaw) global search + ICP, inter-session loops, joint LM pose graph |
@@ -22,7 +24,7 @@ needs to fill `lio::MeasureGroup` and call `LIOBuilder::process` / `LoopClosure:
 
 ## Layout
 ```
-core/      lio_core: so3.h, ieskf, imu_processor, voxel_map, lio_builder (residuals)
+core/      lio_core: ieskf, imu_processor, voxel_map, lio_builder (residuals)
 mapping/   lio_mapping_lib: keyframe (session I/O), loop_closure (radius search + ICP + iSAM2), map_merge
 apps/      lio_mapping (LIO + loops on a dataset), map_merge (two sessions -> one map)
 tools/     bag_to_frames.py (bag -> offline format), run_eval.sh (evo A/B), render_demo.py (offscreen mp4)
@@ -32,6 +34,8 @@ config/    mid360.yaml
 ## Build
 ```bash
 sudo apt install libpcl-dev libgtsam-dev libyaml-cpp-dev libeigen3-dev
+# Sophus 1.22+ is header-only and not packaged on Ubuntu. From a Sophus checkout:
+#   cmake -S . -B /tmp/sophus-build -DSOPHUS_USE_BASIC_LOGGING=ON && sudo cmake --install /tmp/sophus-build
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
 ```
 

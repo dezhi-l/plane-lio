@@ -7,8 +7,8 @@
 #include <gtsam/slam/BetweenFactor.h>
 #include <gtsam/slam/PriorFactor.h>
 #include <pcl/kdtree/kdtree_flann.h>
-#include <pcl/registration/icp.h>
-#include "lio/so3.h"
+#include <sophus/so3.hpp>
+#include <Eigen/Geometry>
 
 namespace lio
 {
@@ -40,7 +40,8 @@ bool LoopClosure::addPose(double time, const Eigen::Matrix3d &rot, const Eigen::
     {
         const Keyframe &last = kfs_.back();
         const Eigen::Vector3d dp = last.local_rot.transpose() * (pos - last.local_pos);
-        const double dr = so3::log(last.local_rot.transpose() * rot).norm();
+        const Eigen::Matrix3d dR = last.local_rot.transpose() * rot;
+        const double dr = Sophus::SO3d(Eigen::Quaterniond(dR).normalized()).log().norm();
         if (dp.norm() < params_.key_dist_thresh && dr < params_.key_rot_thresh)
             return false;
     }
@@ -109,19 +110,9 @@ bool LoopClosure::detectLoop(int cur, int &pre, Eigen::Matrix4d &T_pre_cur, doub
     PointCloud::Ptr src = buildMap(kfs_, params_.submap_leaf, cur, cur);
     PointCloud::Ptr tgt = buildMap(kfs_, params_.submap_leaf, std::max(0, pre - params_.submap_half_window),
                                    std::min(cur - 1, pre + params_.submap_half_window));
-    pcl::IterativeClosestPoint<PointType, PointType> icp;
-    icp.setMaxCorrespondenceDistance(params_.icp_max_corr);
-    icp.setMaximumIterations(50);
-    icp.setTransformationEpsilon(1e-6);
-    icp.setEuclideanFitnessEpsilon(1e-6);
-    icp.setInputSource(src);
-    icp.setInputTarget(tgt);
-    PointCloud aligned;
-    icp.align(aligned);
-    score = icp.getFitnessScore();
-    if (!icp.hasConverged() || score > params_.icp_fitness_thresh)
+    if (!alignICP(src, tgt, Eigen::Matrix4f::Identity(), params_.icp_max_corr, false, T_pre_cur, score) ||
+        score > params_.icp_fitness_thresh)
         return false;
-    T_pre_cur = icp.getFinalTransformation().cast<double>();
     return true;
 }
 

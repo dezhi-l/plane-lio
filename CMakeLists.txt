@@ -8,6 +8,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 find_package(Eigen3 REQUIRED)
+find_package(Sophus REQUIRED)
 # Debian's VTK (pulled in by PCL io) references MPI::MPI_C even when MPI is absent.
 find_package(MPI QUIET COMPONENTS C)
 if(NOT TARGET MPI::MPI_C)
@@ -29,7 +30,7 @@ add_library(lio_core
   core/src/voxel_map.cpp
   core/src/lio_builder.cpp)
 target_include_directories(lio_core PUBLIC core/include ${PCL_INCLUDE_DIRS})
-target_link_libraries(lio_core PUBLIC Eigen3::Eigen ${PCL_LIBRARIES})
+target_link_libraries(lio_core PUBLIC Eigen3::Eigen Sophus::Sophus ${PCL_LIBRARIES})
 if(OpenMP_CXX_FOUND)
   target_link_libraries(lio_core PUBLIC OpenMP::OpenMP_CXX)
 endif()
