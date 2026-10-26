@@ -1,0 +1,36 @@
+# Single configuration for the offline pipeline (Livox Mid-360). All keys optional.
+preprocess:
+  blind: 0.5            # m, drop points closer than this
+  point_stride: 3       # keep every n-th point
+
+lio:
+  residual: point_to_plane   # point_to_plane | gicp  (override: --residual)
+  scan_resolution: 0.5
+  map_resolution: 0.5
+  near_mode: 1               # voxel neighbourhood: 1 | 7 | 19 | 26
+  max_iterations: 10
+  # point-to-plane
+  knn: 5
+  plane_thresh: 0.1          # max point-to-fitted-plane distance for a valid plane
+  p2plane_robust_delta: 0.1  # Cauchy scale (m)
+  p2plane_gain: 1000
+  # GICP (upstream baseline)
+  gicp_gain: 100
+  # IMU
+  acc_cov: 0.1
+  gyro_cov: 0.1
+  align_gravity: true
+  extrinsic_est_en: false
+  imu_ext_rot: [1, 0, 0, 0, 1, 0, 0, 0, 1]
+  imu_ext_pos: [-0.011, -0.02329, 0.04412]
+
+loop_closure:
+  enable: true
+  key_dist_thresh: 1.0
+  key_rot_thresh: 0.2
+  time_thresh: 30.0
+  index_thresh: 25
+  search_radius: 10.0
+  submap_half_window: 10
+  icp_max_corr: 2.0
+  icp_fitness_thresh: 0.3
