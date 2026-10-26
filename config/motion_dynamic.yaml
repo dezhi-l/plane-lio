@@ -1,0 +1,47 @@
+# Enable wheel/NHC + dynamic filter on top of a base mid360/hilti config (merge manually or include keys under lio:).
+# Example fragment — copy these keys under `lio:` of your sequence config.
+#   wheel_enable: true
+#   nhc_enable: true
+#   wheel_gain: 100
+#   nhc_gain: 100
+#   dynamic:
+#     enable: true
+#     appear_thresh: 0.8
+preprocess:
+  blind: 0.5
+  point_stride: 1
+lio:
+  residual: gicp
+  scan_resolution: 0.4
+  map_resolution: 0.4
+  near_mode: 1
+  max_iterations: 10
+  p2plane_gain: 1000
+  p2plane_robust_delta: 0.1
+  plane_thresh: 0.1
+  knn: 5
+  gicp_gain: 100
+  degen_ratio: 0.003
+  wheel_enable: true
+  nhc_enable: true
+  wheel_gain: 100
+  nhc_gain: 100
+  acc_cov: 0.1
+  gyro_cov: 0.1
+  align_gravity: true
+  extrinsic_est_en: false
+  imu_ext_rot: [1, 0, 0, 0, 1, 0, 0, 0, 1]
+  imu_ext_pos: [0, 0, 0]
+  dynamic:
+    enable: true
+    appear_thresh: 0.8
+loop_closure:
+  enable: true
+  key_dist_thresh: 1.0
+  key_rot_thresh: 0.2
+  time_thresh: 30.0
+  index_thresh: 25
+  search_radius: 10.0
+  submap_half_window: 10
+  icp_max_corr: 2.0
+  icp_fitness_thresh: 0.3

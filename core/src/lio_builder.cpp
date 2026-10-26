@@ -60,12 +60,20 @@ LIOBuilder::LIOBuilder(const LIOParams &p) : params_(p)
     imu_ = std::make_unique<IMUProcessor>(kf_, p.imu_noise, p.imu_ext_rot, p.imu_ext_pos, p.align_gravity);
     map_ = std::make_unique<VoxelMap>(p.map_resolution, p.map_capacity, p.grid_capacity, p.near_mode);
     scan_filter_ = std::make_unique<FastVoxelMap>(p.scan_resolution);
+    dynamic_ = std::make_unique<DynamicFilter>(p.dynamic);
 }
 
 bool LIOBuilder::process(const MeasureGroup &meas)
 {
     if (!imu_->process(meas, cloud_lidar_))
         return false;
+    // Range-image dynamic filter in body frame before the first map insert / matching.
+    if (params_.dynamic.enable)
+    {
+        const size_t before = cloud_lidar_->size();
+        cloud_lidar_ = dynamic_->filter(*cloud_lidar_);
+        dynamic_dropped += before - cloud_lidar_->size();
+    }
     if (!map_initialized_)
     {
         map_->addCloud(cloudWorld());
@@ -98,6 +106,48 @@ void LIOBuilder::measurement(const kf::State &s, kf::MeasurementSystem &m)
         pointToPlane(s, m);
     if (params_.degen_ratio > 0)
         projectDegenerate(m);
+    if (params_.wheel_enable || params_.nhc_enable)
+        addMotionConstraints(s, m);
+}
+
+// Body-frame velocity residual: r = R^T v - v_ref.
+// Wheel: v_ref.x = wheel speed; NHC: v_ref.y = v_ref.z = 0 (and optionally x free).
+// Right-multiplicative rot error => J_rot = hat(v_body), J_vel = R^T.
+void LIOBuilder::addMotionConstraints(const kf::State &s, kf::MeasurementSystem &m)
+{
+    const Eigen::Vector3d v_body = s.rot.transpose() * s.vel;
+    Eigen::Vector3d v_ref = v_body;
+    Eigen::Vector3d w = Eigen::Vector3d::Zero(); // per-axis information
+    if (params_.nhc_enable)
+    {
+        v_ref.y() = 0.0;
+        v_ref.z() = 0.0;
+        w.y() = params_.nhc_gain;
+        w.z() = params_.nhc_gain;
+    }
+    if (params_.wheel_enable && wheel_valid_)
+    {
+        v_ref.x() = wheel_vel_.x();
+        w.x() = params_.wheel_gain;
+    }
+    if (w.norm() < 1e-12)
+        return;
+    const Eigen::Vector3d r = v_body - v_ref;
+    const Eigen::Matrix3d J_vel = s.rot.transpose();          // dr / d v_world
+    const Eigen::Matrix3d J_rot = Sophus::SO3d::hat(v_body);  // dr / d theta (right)
+    for (int i = 0; i < 3; i++)
+    {
+        if (w[i] < 1e-12)
+            continue;
+        const Eigen::RowVector3d Ji_v = J_vel.row(i);
+        const Eigen::RowVector3d Ji_r = J_rot.row(i);
+        m.H_vel += w[i] * Ji_v.transpose() * Ji_v;
+        m.b_vel += w[i] * Ji_v.transpose() * r[i];
+        m.H_rot_vel += w[i] * Ji_r.transpose() * Ji_v; // rot rows, vel cols
+        m.b_rot += w[i] * Ji_r.transpose() * r[i];
+        // Also accumulate rot-rot block into the LiDAR H (cols/rows 3..5 of the 12x12).
+        m.H.block<3, 3>(3, 3) += w[i] * Ji_r.transpose() * Ji_r;
+    }
 }
 
 void LIOBuilder::projectDegenerate(kf::MeasurementSystem &m)

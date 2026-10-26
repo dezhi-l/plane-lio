@@ -16,13 +16,19 @@ using Matrix23x12d = Eigen::Matrix<double, 23, 12>;
 using Matrix3x2d = Eigen::Matrix<double, 3, 2>;
 using Matrix2x3d = Eigen::Matrix<double, 2, 3>;
 
-// Normal equations of the measurement model w.r.t. the first 12 states
-// (pos, rot, rot_ext, pos_ext). Filled by the LiDAR residual each iteration.
+// Normal equations of the measurement model.
+// H/b: first 12 states (pos, rot, rot_ext, pos_ext) from LiDAR.
+// H_vel/b_vel: world-frame velocity (states 12..14) from wheel / NHC.
 struct MeasurementSystem
 {
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
     Matrix12d H = Matrix12d::Zero();
     Vector12d b = Vector12d::Zero();
+    Eigen::Matrix3d H_vel = Eigen::Matrix3d::Zero();
+    Eigen::Vector3d b_vel = Eigen::Vector3d::Zero();
+    // Cross terms: d(r_vel)/d(rot) so H_cross accumulates J_rot^T W J_vel etc. via addVel.
+    Eigen::Matrix<double, 3, 3> H_rot_vel = Eigen::Matrix3d::Zero(); // rot block cols 3..5 <-> vel
+    Eigen::Matrix<double, 3, 1> b_rot = Eigen::Vector3d::Zero();     // extra rot RHS from vel residual
     size_t iter_num = 0;
     bool valid = true;
 };

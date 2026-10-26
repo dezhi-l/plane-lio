@@ -22,6 +22,10 @@ public:
         IMU m;
         while (f >> m.timestamp >> m.acc.x() >> m.acc.y() >> m.acc.z() >> m.gyro.x() >> m.gyro.y() >> m.gyro.z())
             imus_.push_back(m);
+        std::ifstream fw(dir + "/wheel.txt"); // optional: t vx vy vz (body frame, m/s)
+        WheelOdom w;
+        while (fw >> w.timestamp >> w.vel.x() >> w.vel.y() >> w.vel.z())
+            wheels_.push_back(w);
     }
 
     // Next scan with all IMU samples up to the scan end time.
@@ -51,13 +55,18 @@ public:
         mg.imus.clear();
         while (imu_idx_ < imus_.size() && imus_[imu_idx_].timestamp <= mg.lidar_time_end)
             mg.imus.push_back(imus_[imu_idx_++]);
+        mg.wheels.clear();
+        while (wheel_idx_ < wheels_.size() && wheels_[wheel_idx_].timestamp <= mg.lidar_time_end)
+            mg.wheels.push_back(wheels_[wheel_idx_++]);
         return true;
     }
 
 private:
     std::ifstream scans_;
     std::deque<IMU> imus_;
+    std::deque<WheelOdom> wheels_;
     size_t imu_idx_ = 0;
+    size_t wheel_idx_ = 0;
     double blind2_;
     int stride_;
 };

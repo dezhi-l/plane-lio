@@ -19,13 +19,21 @@ struct IMU
     Eigen::Vector3d gyro = Eigen::Vector3d::Zero();
 };
 
-// One LiDAR scan plus the IMU samples that cover it.
+// Wheel / chassis odometry sample. Velocity is in the body (base_link) frame, m/s.
+struct WheelOdom
+{
+    double timestamp = 0.0;
+    Eigen::Vector3d vel = Eigen::Vector3d::Zero(); // vx forward, vy lateral, vz up
+};
+
+// One LiDAR scan plus the IMU (and optional wheel) samples that cover it.
 struct MeasureGroup
 {
     double lidar_time_begin = 0.0;
     double lidar_time_end = 0.0;
     PointCloud::Ptr lidar;
     std::deque<IMU> imus;
+    std::deque<WheelOdom> wheels;
 };
 
 // Rigid pose (rotation + translation) with a timestamp.

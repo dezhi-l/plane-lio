@@ -112,6 +112,10 @@ void IESKF::update()
     {
         meas.H.setZero();
         meas.b.setZero();
+        meas.H_vel.setZero();
+        meas.b_vel.setZero();
+        meas.H_rot_vel.setZero();
+        meas.b_rot.setZero();
         func_(x_, meas);
         delta = x_ - x_pred;
         Matrix23d J = Matrix23d::Identity();
@@ -122,6 +126,12 @@ void IESKF::update()
         Vector23d b = J.transpose() * P_inv * delta;
         H.block<12, 12>(0, 0) += meas.H;
         b.head<12>() += meas.b;
+        // Wheel / NHC velocity factors (states 12..14) and their coupling to rot (3..5).
+        H.block<3, 3>(12, 12) += meas.H_vel;
+        b.segment<3>(12) += meas.b_vel;
+        H.block<3, 3>(3, 12) += meas.H_rot_vel;
+        H.block<3, 3>(12, 3) += meas.H_rot_vel.transpose();
+        b.segment<3>(3) += meas.b_rot;
         delta = -H.ldlt().solve(b);
         x_ += delta;
         meas.iter_num++;

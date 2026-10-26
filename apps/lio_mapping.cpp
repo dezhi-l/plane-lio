@@ -1,6 +1,6 @@
 // Offline LIO + loop closure.
 // usage: lio_mapping <config.yaml> <dataset_dir> <out_dir> [--residual point_to_plane|gicp]
-//                    [--start s] [--end s] [--degen ratio] [--no-loop]
+//                    [--start s] [--end s] [--degen ratio] [--wheel] [--nhc] [--dynamic] [--no-loop]
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -43,6 +43,17 @@ void loadLio(const YAML::Node &l, Job &job)
     get(l, "knn", job.lp.knn);
     get(l, "gicp_gain", job.lp.gicp_gain);
     get(l, "degen_ratio", job.lp.degen_ratio);
+    get(l, "wheel_enable", job.lp.wheel_enable);
+    get(l, "nhc_enable", job.lp.nhc_enable);
+    get(l, "wheel_gain", job.lp.wheel_gain);
+    get(l, "nhc_gain", job.lp.nhc_gain);
+    if (l && l["dynamic"])
+    {
+        get(l["dynamic"], "enable", job.lp.dynamic.enable);
+        get(l["dynamic"], "appear_thresh", job.lp.dynamic.appear_thresh);
+        get(l["dynamic"], "azimuth_bins", job.lp.dynamic.azimuth_bins);
+        get(l["dynamic"], "elev_bins", job.lp.dynamic.elev_bins);
+    }
     get(l, "extrinsic_est_en", job.lp.extrinsic_est_en);
     get(l, "align_gravity", job.lp.align_gravity);
     int mode = 1;
@@ -88,6 +99,12 @@ void applyCli(int argc, char **argv, Job &job)
             job.end = std::stod(argv[++i]);
         else if (a == "--degen" && i + 1 < argc)
             job.lp.degen_ratio = std::stod(argv[++i]);
+        else if (a == "--wheel")
+            job.lp.wheel_enable = true;
+        else if (a == "--nhc")
+            job.lp.nhc_enable = true;
+        else if (a == "--dynamic")
+            job.lp.dynamic.enable = true;
         else if (a == "--no-loop")
             job.cp.enable = false;
     }
@@ -133,7 +150,7 @@ int main(int argc, char **argv)
 {
     if (argc < 4)
     {
-        std::cerr << "usage: lio_mapping <config.yaml> <dataset_dir> <out_dir> [--residual r] [--start s] [--end s] [--degen ratio] [--no-loop]\n";
+        std::cerr << "usage: lio_mapping <config.yaml> <dataset_dir> <out_dir> [--residual r] [--start s] [--end s] [--degen ratio] [--wheel] [--nhc] [--dynamic] [--no-loop]\n";
         return 1;
     }
     const Job job = loadJob(argc, argv);
@@ -154,6 +171,10 @@ int main(int argc, char **argv)
             continue;
         if (rel > job.end)
             break;
+        if (!mg.wheels.empty())
+            lio.setWheelVelocity(mg.wheels.back().vel, true);
+        else
+            lio.setWheelVelocity(Eigen::Vector3d::Zero(), false);
         const auto tic = std::chrono::steady_clock::now();
         if (!lio.process(mg))
             continue;
@@ -167,6 +188,7 @@ int main(int argc, char **argv)
         global.push_back(gp);
     }
     writeOutputs(job.out, job.residual, odom, global, loop, lio_ms, n_scans);
-    std::cout << "degenerate_updates " << lio.degenerate_updates << '\n';
+    std::cout << "degenerate_updates " << lio.degenerate_updates
+              << " dynamic_dropped " << lio.dynamic_dropped << '\n';
     return 0;
 }
