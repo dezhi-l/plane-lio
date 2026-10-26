@@ -1,6 +1,12 @@
 # plane-lio
 
-![LIO mapping, then a two-session map merge](docs/demo/preview.gif)
+## LIO mapping
+
+![LIO mapping with loop closure](docs/demo/lio_mapping.gif)
+
+## Map merge
+
+![Two sessions, alignment, and the merged map](docs/demo/map_merge.gif)
 
 LiDAR-inertial odometry + loop closure + multi-session map merge, as a small ROS-free C++ library
 with offline tools. Refactor of [liangheming/iG-LIO_SAM_LC](https://github.com/liangheming/iG-LIO_SAM_LC)
