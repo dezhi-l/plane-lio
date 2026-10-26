@@ -26,6 +26,10 @@ struct LIOParams
     int knn = 5;
     // gicp
     double gicp_gain = 100.0;
+    // degeneracy-aware update (X-ICP / solution-remapping style): LiDAR information along
+    // eigen-directions weaker than degen_ratio * strongest (per 3x3 trans / rot block) is dropped,
+    // so the IMU prediction constrains those directions. 0 disables.
+    double degen_ratio = 0.0;
     // keyframe insertion into the local map
     double key_rot_thresh = 0.18;  // rad
     double key_pos_thresh = 0.5;   // m
@@ -50,6 +54,7 @@ public:
 private:
     void measurement(const kf::State &s, kf::MeasurementSystem &m);
     void pointToPlane(const kf::State &s, kf::MeasurementSystem &m);
+    void projectDegenerate(kf::MeasurementSystem &m);
     void gicp(const kf::State &s, kf::MeasurementSystem &m);
     void addJacobianExtrinsic(const kf::State &s, const Eigen::Vector3d &p_lidar, Eigen::Matrix<double, -1, 12> &J) const;
 
@@ -77,6 +82,9 @@ private:
     PointCloud::Ptr cloud_lidar_;
     std::vector<PointCov> scan_points_;
     std::vector<Plane, Eigen::aligned_allocator<Plane>> planes_;
+public:
+    size_t degenerate_updates = 0;
+private:
     std::vector<GICPCorr, Eigen::aligned_allocator<GICPCorr>> gicp_corr_;
     Eigen::Matrix3d key_rot_ = Eigen::Matrix3d::Identity();
     Eigen::Vector3d key_pos_ = Eigen::Vector3d::Zero();

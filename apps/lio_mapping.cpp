@@ -1,6 +1,6 @@
 // Offline LIO + loop closure.
 // usage: lio_mapping <config.yaml> <dataset_dir> <out_dir> [--residual point_to_plane|gicp]
-//                    [--start s] [--end s] [--no-loop]
+//                    [--start s] [--end s] [--degen ratio] [--no-loop]
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -42,6 +42,7 @@ void loadLio(const YAML::Node &l, Job &job)
     get(l, "plane_thresh", job.lp.plane_thresh);
     get(l, "knn", job.lp.knn);
     get(l, "gicp_gain", job.lp.gicp_gain);
+    get(l, "degen_ratio", job.lp.degen_ratio);
     get(l, "extrinsic_est_en", job.lp.extrinsic_est_en);
     get(l, "align_gravity", job.lp.align_gravity);
     int mode = 1;
@@ -85,6 +86,8 @@ void applyCli(int argc, char **argv, Job &job)
             job.start = std::stod(argv[++i]);
         else if (a == "--end" && i + 1 < argc)
             job.end = std::stod(argv[++i]);
+        else if (a == "--degen" && i + 1 < argc)
+            job.lp.degen_ratio = std::stod(argv[++i]);
         else if (a == "--no-loop")
             job.cp.enable = false;
     }
@@ -130,7 +133,7 @@ int main(int argc, char **argv)
 {
     if (argc < 4)
     {
-        std::cerr << "usage: lio_mapping <config.yaml> <dataset_dir> <out_dir> [--residual r] [--start s] [--end s] [--no-loop]\n";
+        std::cerr << "usage: lio_mapping <config.yaml> <dataset_dir> <out_dir> [--residual r] [--start s] [--end s] [--degen ratio] [--no-loop]\n";
         return 1;
     }
     const Job job = loadJob(argc, argv);
@@ -164,5 +167,6 @@ int main(int argc, char **argv)
         global.push_back(gp);
     }
     writeOutputs(job.out, job.residual, odom, global, loop, lio_ms, n_scans);
+    std::cout << "degenerate_updates " << lio.degenerate_updates << '\n';
     return 0;
 }

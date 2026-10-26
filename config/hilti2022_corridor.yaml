@@ -1,0 +1,38 @@
+# Hilti 2022 Phasma: Hesai PandarXT-32 + Bosch BMI085 (lidar_calibration.yaml, quaternion xyzw)
+# Degenerate-corridor setting (Hilti 2022 exp18): dense scan, 7-voxel association, 1 cm plane sigma, degeneracy guard.
+preprocess:
+  blind: 0.5            # m, drop points closer than this
+  point_stride: 1       # keep every n-th point
+
+lio:
+  residual: point_to_plane   # point_to_plane | gicp  (override: --residual)
+  scan_resolution: 0.25
+  map_resolution: 0.25
+  near_mode: 7               # voxel neighbourhood: 1 | 7 | 19 | 26
+  max_iterations: 10
+  degen_ratio: 0.003         # drop LiDAR info along eigen-directions < ratio*max (0 = off)
+  # point-to-plane
+  knn: 5
+  plane_thresh: 0.1          # max point-to-fitted-plane distance for a valid plane
+  p2plane_robust_delta: 0.1  # Cauchy scale (m)
+  p2plane_gain: 10000
+  # GICP (upstream baseline)
+  gicp_gain: 100
+  # IMU
+  acc_cov: 0.1
+  gyro_cov: 0.1
+  align_gravity: true
+  extrinsic_est_en: false
+  imu_ext_rot: [0, -1, 0, -1, 0, 0, 0, 0, -1]
+  imu_ext_pos: [-0.001, -0.00855, 0.055]
+
+loop_closure:
+  enable: true
+  key_dist_thresh: 1.0
+  key_rot_thresh: 0.2
+  time_thresh: 30.0
+  index_thresh: 25
+  search_radius: 10.0
+  submap_half_window: 10
+  icp_max_corr: 2.0
+  icp_fitness_thresh: 0.3

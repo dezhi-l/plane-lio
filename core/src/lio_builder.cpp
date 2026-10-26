@@ -96,6 +96,32 @@ void LIOBuilder::measurement(const kf::State &s, kf::MeasurementSystem &m)
         gicp(s, m);
     else
         pointToPlane(s, m);
+    if (params_.degen_ratio > 0)
+        projectDegenerate(m);
+}
+
+void LIOBuilder::projectDegenerate(kf::MeasurementSystem &m)
+{
+    kf::Matrix12d P = kf::Matrix12d::Identity();
+    bool degenerate = false;
+    for (int k : {0, 3})
+    {
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(m.H.block<3, 3>(k, k));
+        const Eigen::Vector3d ev = es.eigenvalues();
+        Eigen::Matrix3d keep = Eigen::Matrix3d::Zero();
+        for (int i = 0; i < 3; i++)
+            if (ev[i] >= params_.degen_ratio * ev[2])
+                keep += es.eigenvectors().col(i) * es.eigenvectors().col(i).transpose();
+            else
+                degenerate = true;
+        P.block<3, 3>(k, k) = keep;
+    }
+    if (!degenerate)
+        return;
+    if (m.iter_num == 0)
+        degenerate_updates++;
+    m.H = P * m.H * P;
+    m.b = P * m.b;
 }
 
 void LIOBuilder::addJacobianExtrinsic(const kf::State &s, const Eigen::Vector3d &p_lidar,
