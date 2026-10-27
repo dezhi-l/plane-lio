@@ -39,15 +39,16 @@ kf::Observation wheelNhcObs(const kf::State &s, const MotionParams &p, const Mot
     const Vec3 v_i = s.rot.transpose() * s.vel;
     const Vec3 omega = in.gyro - s.bg;
     const Vec3 v_b = Rbi * (v_i + omega.cross(p.ext_pos));
-    const Vec3 z(p.wheel_scale * in.wheel_vel.x(), 0.0, 0.0);
+    const Vec3 z(p.wheel_scale * in.wheel_vel.x(), p.wheel_omni ? p.wheel_scale * in.wheel_vel.y() : 0.0, 0.0);
     // Full 3-row model, then keep the enabled rows.
     Eigen::Matrix<double, 3, 23> J = Eigen::Matrix<double, 3, 23>::Zero();
     J.block<3, 3>(0, kRot) = Rbi * hat(v_i);               // right perturbation R*Exp(dtheta)
     J.block<3, 3>(0, kVel) = Rbi * s.rot.transpose();
     J.block<3, 3>(0, kBg) = Rbi * hat(p.ext_pos);          // (w - bg) x l  ->  +hat(l) dbg
     kf::Observation o;
-    const bool use[3] = {p.wheel_enable && in.wheel_valid, p.nhc_enable, p.nhc_enable};
-    const double gain[3] = {p.wheel_gain, p.nhc_gain, p.nhc_gain};
+    const bool omni_y = p.wheel_enable && p.wheel_omni && in.wheel_valid; // lateral speed is measured, not constrained
+    const bool use[3] = {p.wheel_enable && in.wheel_valid, omni_y || (p.nhc_enable && !p.wheel_omni), p.nhc_enable};
+    const double gain[3] = {p.wheel_gain, omni_y ? p.wheel_gain : p.nhc_gain, p.nhc_gain};
     for (int i = 0; i < 3; i++)
     {
         if (!use[i])

@@ -74,12 +74,17 @@ int main()
     in.wheel_valid = true;
     in.gyro = randVec(g, 0.5);
     in.acc = randVec(g, 3.0);
+    MotionParams po = p; // omnidirectional base: lateral speed is observed (non-zero vy)
+    po.wheel_omni = true;
+    MotionInput io = in;
+    io.wheel_vel.y() = -0.4;
     double worst = 0.0;
     int rows[3] = {0, 0, 0};
     for (int trial = 0; trial < 50; trial++)
     {
         const kf::State s = randomState(g);
-        worst = std::max({worst, maxError(wheel, s, p, in, rows[0]), maxError(zupt, s, p, in, rows[1]),
+        worst = std::max({worst, maxError(wheel, s, p, in, rows[0]),
+                          maxError(wheel, s, po, io, rows[0]), maxError(zupt, s, p, in, rows[1]),
                           maxError(limit, s, p, in, rows[2])});
     }
     std::cout << "rows wheel/nhc=" << rows[0] << " zupt=" << rows[1] << " bias_limit=" << rows[2]

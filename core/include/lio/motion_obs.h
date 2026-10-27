@@ -20,6 +20,7 @@ struct MotionParams
     double wheel_gain = 100.0;  // 1/sigma^2 of the forward speed [(m/s)^-2]
     double nhc_gain = 100.0;    // 1/sigma^2 of lateral / vertical speed
     double wheel_scale = 1.0;   // multiplies the measured wheel speed
+    bool wheel_omni = false;    // omnidirectional base: observe measured lateral speed (vy) instead of NHC vy = 0
     double wheel_max_dt = 0.5;  // [s] wheel sample older than this (vs scan end) is ignored
     Eigen::Matrix3d ext_rot = Eigen::Matrix3d::Identity(); // wheel/base frame -> IMU (vector: v_imu = R v_b)
     Eigen::Vector3d ext_pos = Eigen::Vector3d::Zero();     // wheel/base origin in the IMU frame [m] (lever arm)

@@ -39,6 +39,7 @@ void loadMotion(const YAML::Node &l, MotionParams &m)
     get(l, "wheel_gain", m.wheel_gain);
     get(l, "nhc_gain", m.nhc_gain);
     get(l, "wheel_scale", m.wheel_scale);
+    get(l, "wheel_omni", m.wheel_omni);
     get(l, "wheel_max_dt", m.wheel_max_dt);
     get(l, "motion_huber", m.huber_k);
     get(l, "zupt_enable", m.zupt_enable);
