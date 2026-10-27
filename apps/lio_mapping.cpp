@@ -65,6 +65,32 @@ void loadMotion(const YAML::Node &l, MotionParams &m)
     }
 }
 
+// Degeneracy detection / safeguards (`degen_ratio` kept as the short key) and the neighbour filter.
+void loadDegen(const YAML::Node &l, DegenParams &d)
+{
+    get(l, "degen_ratio", d.ratio);
+    get(l, "degen_abs_min", d.abs_min);
+    get(l, "degen_freeze_bias", d.freeze_bias);
+    get(l, "degen_vel_damp_gain", d.vel_damp_gain);
+    get(l, "degen_wheel_boost", d.wheel_boost);
+}
+
+void loadNeighborFilter(const YAML::Node &n, NeighborFilterParams &f)
+{
+    get(n, "enable", f.enable);
+    get(n, "trigger", f.trigger);
+    get(n, "grid", f.grid);
+    get(n, "min_num", f.min_num);
+    get(n, "range", f.range);
+    get(n, "neighbor_min", f.neighbor_min);
+    get(n, "near_range", f.near_range);
+    get(n, "sub_offset", f.sub_offset);
+    get(n, "pca_check", f.pca_check);
+    get(n, "plane_ratio", f.plane_ratio);
+    get(n, "line_ratio", f.line_ratio);
+    get(n, "max_outs", f.max_outs);
+}
+
 void loadLio(const YAML::Node &l, Job &job)
 {
     get(l, "residual", job.residual);
@@ -75,8 +101,11 @@ void loadLio(const YAML::Node &l, Job &job)
     get(l, "p2plane_robust_delta", job.lp.p2plane_robust_delta);
     get(l, "plane_thresh", job.lp.plane_thresh);
     get(l, "knn", job.lp.knn);
+    get(l, "voxel_plane", job.lp.voxel_plane);
+    get(l, "voxel_plane_ratio", job.lp.voxel_plane_ratio);
     get(l, "gicp_gain", job.lp.gicp_gain);
-    get(l, "degen_ratio", job.lp.degen_ratio);
+    loadDegen(l, job.lp.degen);
+    loadNeighborFilter(l["neighbor_filter"], job.lp.nfilter);
     loadMotion(l, job.lp.motion);
     if (l && l["dynamic"])
     {
@@ -132,7 +161,7 @@ void applyCli(int argc, char **argv, Job &job)
         else if (a == "--end" && i + 1 < argc)
             job.end = std::stod(argv[++i]);
         else if (a == "--degen" && i + 1 < argc)
-            job.lp.degen_ratio = std::stod(argv[++i]);
+            job.lp.degen.ratio = std::stod(argv[++i]);
         else if (a == "--wheel")
             job.lp.motion.wheel_enable = true;
         else if (a == "--nhc")
@@ -145,6 +174,10 @@ void applyCli(int argc, char **argv, Job &job)
             job.lp.imu_noise.proper_bias_rw = true;
         else if (a == "--dynamic")
             job.lp.dynamic.enable = true;
+        else if (a == "--nfilter")
+            job.lp.nfilter.enable = true;
+        else if (a == "--nfilter-trigger" && i + 1 < argc)
+            job.lp.nfilter.trigger = std::stoul(argv[++i]);
         else if (a == "--no-loop")
             job.cp.enable = false;
     }
@@ -183,6 +216,20 @@ void writeOutputs(const std::string &out, const std::string &residual, const std
        << "\nloops " << loop.loops().size() << "\nlio_ms_per_scan " << ms << '\n';
     std::cout << "done: " << n_scans << " scans, " << loop.keyframes().size() << " keyframes, "
               << loop.loops().size() << " loops, " << ms << " ms/scan (LIO)\n";
+}
+
+// One row per scan: eigenvalues / weakest directions of the LiDAR information, degenerate counts.
+void writeDegenLog(const std::string &path, const std::vector<DegenFrame, Eigen::aligned_allocator<DegenFrame>> &log)
+{
+    std::ofstream f(path);
+    f << "scan,time,raw,points,planes,ev_t0,ev_t1,ev_t2,ev_r0,ev_r1,ev_r2,n_t,n_r,wheel,dir_t0_x,dir_t0_y,dir_t0_z,dir_r0_x,dir_r0_y,dir_r0_z\n";
+    for (const auto &d : log)
+        f << d.scan << ',' << std::fixed << d.time << ',' << d.raw << ',' << d.points << ',' << d.planes << ',' << std::scientific
+          << d.info.ev_t.transpose().format(Eigen::IOFormat(6, Eigen::DontAlignCols, ",", ",")) << ','
+          << d.info.ev_r.transpose().format(Eigen::IOFormat(6, Eigen::DontAlignCols, ",", ",")) << ',' << d.info.n_t << ','
+          << d.info.n_r << ',' << d.wheel << ',' << std::fixed
+          << d.info.dir_t.col(0).transpose().format(Eigen::IOFormat(4, Eigen::DontAlignCols, ",", ",")) << ','
+          << d.info.dir_r.col(0).transpose().format(Eigen::IOFormat(4, Eigen::DontAlignCols, ",", ",")) << '\n';
 }
 } // namespace
 
@@ -223,9 +270,10 @@ int main(int argc, char **argv)
         loop.toGlobal(s.rot, s.pos, gp.rot, gp.pos);
         global.push_back(gp);
     }
+    writeDegenLog(job.out + "/degen.csv", lio.degenLog());
     writeOutputs(job.out, job.residual, odom, global, loop, lio_ms, n_scans);
     std::cout << "degenerate_updates " << lio.degenerate_updates
-              << " dynamic_dropped " << lio.dynamic_dropped << " zupt_scans " << lio.zupt_scans << '\n';
+              << " nfilter_scans " << lio.nfilter_scans << " dynamic_dropped " << lio.dynamic_dropped << " zupt_scans " << lio.zupt_scans << '\n';
     const auto &fs = lio.state();
     std::cout << "final_bg " << fs.bg.transpose() << " final_ba " << fs.ba.transpose() << '\n';
     return 0;

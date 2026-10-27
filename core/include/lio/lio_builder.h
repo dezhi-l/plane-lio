@@ -7,6 +7,8 @@
 #include "lio/voxel_map.h"
 #include "lio/dynamic_filter.h"
 #include "lio/motion_obs.h"
+#include "lio/degeneracy.h"
+#include "lio/neighbor_filter.h"
 
 namespace lio
 {
@@ -26,12 +28,18 @@ struct LIOParams
     double p2plane_robust_delta = 0.1; // Cauchy kernel scale [m]
     double plane_thresh = 0.1;        // max point-to-fitted-plane distance of the kNN [m]
     int knn = 5;
+    // Plane source: kNN fit (default) or the covariance plane of the nearest map cell (robust at close
+    // range, where the kNN points sit a few mm apart and the fitted normal is noise).
+    bool voxel_plane = false;
+    double voxel_plane_ratio = 0.1; // cell is planar when lambda_min / lambda_mid < ratio
     // gicp
     double gicp_gain = 100.0;
     // degeneracy-aware update (X-ICP / solution-remapping style): LiDAR information along
-    // eigen-directions weaker than degen_ratio * strongest (per 3x3 trans / rot block) is dropped,
-    // so the IMU prediction constrains those directions. 0 disables.
-    double degen_ratio = 0.0;
+    // eigen-directions weaker than degen.ratio * strongest (per 3x3 trans / rot block) is dropped,
+    // so the IMU prediction (and wheel / NHC when present) constrains those directions. 0 disables.
+    DegenParams degen;
+    // Plane-aware filter used instead of the voxel filter when the latter leaves too few points.
+    NeighborFilterParams nfilter;
     // Wheel / NHC / ZUPT / bias-limit observations fused in the iterated update (see motion_obs.h).
     MotionParams motion;
     // Online dynamic-point filter (range-image appear-in-front check) before map insert.
@@ -53,6 +61,7 @@ public:
 
     bool process(const MeasureGroup &meas);
     const kf::State &state() const { return kf_->x(); }
+    const std::vector<DegenFrame, Eigen::aligned_allocator<DegenFrame>> &degenLog() const { return degen_log_; }
     PointCloud::Ptr cloudLidar() const { return cloud_lidar_; }
     PointCloud::Ptr cloudBody() const;
     PointCloud::Ptr cloudWorld() const;
@@ -60,7 +69,8 @@ public:
 private:
     void measurement(const kf::State &s, kf::MeasurementSystem &m);
     void pointToPlane(const kf::State &s, kf::MeasurementSystem &m);
-    void projectDegenerate(kf::MeasurementSystem &m);
+    void handleDegeneracy(const kf::State &s, kf::MeasurementSystem &m);
+    void selectScanPoints();
     void gicp(const kf::State &s, kf::MeasurementSystem &m);
     void updateMotionInput(const MeasureGroup &meas);
     void addJacobianExtrinsic(const kf::State &s, const Eigen::Vector3d &p_lidar, Eigen::Matrix<double, -1, 12> &J) const;
@@ -73,6 +83,7 @@ private:
         double d = 0;           // n.x + d = 0
         bool valid = false;
     };
+    bool voxelPlane(const Eigen::Vector3d &pw, Plane &pl);
     struct GICPCorr
     {
         EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -92,10 +103,16 @@ private:
 public:
     size_t degenerate_updates = 0;
     size_t dynamic_dropped = 0;
+    size_t nfilter_scans = 0; // scans whose points came from the neighbour filter
     size_t zupt_scans = 0; // scans on which the wheel reported standstill and ZUPT was applied
 
 private:
     std::unique_ptr<DynamicFilter> dynamic_;
+    std::unique_ptr<NeighborFilter> nfilter_;
+    DegenInfo degen_now_;                  // analysis of the latest iteration
+    Eigen::Vector3d vel_pred_ = Eigen::Vector3d::Zero(); // IMU-predicted velocity at the start of the update
+    size_t n_planes_ = 0;
+    std::vector<DegenFrame, Eigen::aligned_allocator<DegenFrame>> degen_log_;
     MotionInput motion_in_;
     int standstill_count_ = 0;
     std::vector<GICPCorr, Eigen::aligned_allocator<GICPCorr>> gicp_corr_;

@@ -27,6 +27,8 @@ find_package(OpenMP)
 add_library(lio_core
   core/src/ieskf.cpp
   core/src/motion_obs.cpp
+  core/src/degeneracy.cpp
+  core/src/neighbor_filter.cpp
   core/src/imu_processor.cpp
   core/src/voxel_map.cpp
   core/src/lio_builder.cpp)
@@ -59,3 +61,6 @@ enable_testing()
 add_executable(test_motion_obs tests/test_motion_obs.cpp)
 target_link_libraries(test_motion_obs lio_core)
 add_test(NAME motion_obs_jacobian COMMAND test_motion_obs)
+add_executable(test_degeneracy tests/test_degeneracy.cpp)
+target_link_libraries(test_degeneracy lio_core)
+add_test(NAME degeneracy_neighbor_filter COMMAND test_degeneracy)

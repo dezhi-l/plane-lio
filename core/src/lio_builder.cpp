@@ -62,6 +62,7 @@ LIOBuilder::LIOBuilder(const LIOParams &p) : params_(p)
     map_ = std::make_unique<VoxelMap>(p.map_resolution, p.map_capacity, p.grid_capacity, p.near_mode);
     scan_filter_ = std::make_unique<FastVoxelMap>(p.scan_resolution);
     dynamic_ = std::make_unique<DynamicFilter>(p.dynamic);
+    nfilter_ = std::make_unique<NeighborFilter>(p.nfilter);
 }
 
 bool LIOBuilder::process(const MeasureGroup &meas)
@@ -84,9 +85,30 @@ bool LIOBuilder::process(const MeasureGroup &meas)
         map_initialized_ = true;
         return true;
     }
-    scan_filter_->filter(cloud_lidar_, scan_points_);
+    selectScanPoints();
+    const Eigen::Vector3d bg0 = state().bg, ba0 = state().ba;
+    vel_pred_ = state().vel;
+    degen_now_ = DegenInfo();
     kf_->update();
     frame_count_++;
+    if (degen_now_.any())
+    {
+        degenerate_updates++;
+        if (params_.degen.freeze_bias) // degenerate scans must not feed bias estimation
+        {
+            kf_->x().bg = bg0;
+            kf_->x().ba = ba0;
+        }
+    }
+    DegenFrame f;
+    f.time = meas.lidar_time_end;
+    f.scan = frame_count_;
+    f.raw = cloud_lidar_->size();
+    f.points = scan_points_.size();
+    f.planes = n_planes_;
+    f.info = degen_now_;
+    f.wheel = motion_in_.wheel_valid;
+    degen_log_.push_back(f);
     const Eigen::Matrix3d dR = state().rot.transpose() * key_rot_;
     const bool is_key = frame_count_ < 10 || cloud_lidar_->size() < 1000 ||
                         Sophus::SO3d(Eigen::Quaterniond(dR).normalized()).log().norm() > params_.key_rot_thresh ||
@@ -106,9 +128,21 @@ void LIOBuilder::measurement(const kf::State &s, kf::MeasurementSystem &m)
         gicp(s, m);
     else
         pointToPlane(s, m);
-    if (params_.degen_ratio > 0)
-        projectDegenerate(m);
-    addMotionObservations(s, params_.motion, motion_in_, m);
+    if (params_.degen.ratio > 0 || params_.degen.abs_min > 0)
+        handleDegeneracy(s, m);
+    else
+        addMotionObservations(s, params_.motion, motion_in_, m);
+}
+
+// Regular voxel filter; falls back to the plane-aware neighbour filter when the scan is too sparse.
+void LIOBuilder::selectScanPoints()
+{
+    scan_filter_->filter(cloud_lidar_, scan_points_);
+    if (params_.nfilter.enable && scan_points_.size() < params_.nfilter.trigger)
+    {
+        nfilter_->filter(cloud_lidar_, scan_points_);
+        nfilter_scans++;
+    }
 }
 
 // Wheel / NHC / ZUPT inputs for this scan: wheel sample nearest the scan end (if fresh enough),
@@ -139,28 +173,24 @@ void LIOBuilder::updateMotionInput(const MeasureGroup &meas)
     zupt_scans += mp.zupt_enable && motion_in_.standstill;
 }
 
-void LIOBuilder::projectDegenerate(kf::MeasurementSystem &m)
+// Detect LiDAR degeneracy on this iteration's information matrix and, if found, remap the update:
+// the LiDAR step is projected onto the well-constrained directions; the degenerate ones are filled by the
+// wheel / NHC rows (boosted) when available, and always damped towards the IMU-predicted velocity.
+void LIOBuilder::handleDegeneracy(const kf::State &s, kf::MeasurementSystem &m)
 {
-    kf::Matrix12d P = kf::Matrix12d::Identity();
-    bool degenerate = false;
-    for (int k : {0, 3})
+    degen_now_ = analyzeDegeneracy(m.H, params_.degen);
+    MotionParams mp = params_.motion;
+    if (degen_now_.any())
     {
-        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(m.H.block<3, 3>(k, k));
-        const Eigen::Vector3d ev = es.eigenvalues();
-        Eigen::Matrix3d keep = Eigen::Matrix3d::Zero();
-        for (int i = 0; i < 3; i++)
-            if (ev[i] >= params_.degen_ratio * ev[2])
-                keep += es.eigenvectors().col(i) * es.eigenvectors().col(i).transpose();
-            else
-                degenerate = true;
-        P.block<3, 3>(k, k) = keep;
+        const kf::Matrix12d P = wellConstrainedProjector(degen_now_);
+        m.H = P * m.H * P;
+        m.b = P * m.b;
+        mp.wheel_gain *= params_.degen.wheel_boost;
+        mp.nhc_gain *= params_.degen.wheel_boost;
+        if (params_.degen.vel_damp_gain > 0 && degen_now_.n_t > 0)
+            m.add(velocityDampingObs(degen_now_, s, vel_pred_, params_.degen.vel_damp_gain));
     }
-    if (!degenerate)
-        return;
-    if (m.iter_num == 0)
-        degenerate_updates++;
-    m.H = P * m.H * P;
-    m.b = P * m.b;
+    addMotionObservations(s, mp, motion_in_, m);
 }
 
 void LIOBuilder::addJacobianExtrinsic(const kf::State &s, const Eigen::Vector3d &p_lidar,
@@ -170,6 +200,17 @@ void LIOBuilder::addJacobianExtrinsic(const kf::State &s, const Eigen::Vector3d 
     const Eigen::MatrixXd A = J.leftCols<3>();
     J.block(0, 6, J.rows(), 3) = -A * s.rot * s.rot_ext * Sophus::SO3d::hat(p_lidar);
     J.block(0, 9, J.rows(), 3) = A * s.rot;
+}
+
+// Plane of the nearest planar map cell (centroid + covariance normal).
+bool LIOBuilder::voxelPlane(const Eigen::Vector3d &pw, Plane &pl)
+{
+    Eigen::Vector3d c;
+    double planarity;
+    if (!map_->searchPlane(pw, c, pl.normal, planarity) || planarity > params_.voxel_plane_ratio)
+        return false;
+    pl.d = -pl.normal.dot(c);
+    return std::fabs(pl.normal.dot(pw) + pl.d) <= params_.plane_thresh;
 }
 
 void LIOBuilder::pointToPlane(const kf::State &s, kf::MeasurementSystem &m)
@@ -186,6 +227,11 @@ void LIOBuilder::pointToPlane(const kf::State &s, kf::MeasurementSystem &m)
             pl.valid = false;
             pl.point = scan_points_[i].point;
             const Eigen::Vector3d pw = s.rot * (s.rot_ext * pl.point + s.pos_ext) + s.pos;
+            if (params_.voxel_plane)
+            {
+                pl.valid = voxelPlane(pw, pl);
+                continue;
+            }
             std::vector<Eigen::Vector3d> nn;
             nn.reserve(params_.knn);
             if (!map_->searchKNN(pw, params_.knn, 5.0, nn) || int(nn.size()) < params_.knn)
@@ -194,6 +240,7 @@ void LIOBuilder::pointToPlane(const kf::State &s, kf::MeasurementSystem &m)
         }
     }
     Eigen::Matrix<double, -1, 12> J(1, 12);
+    size_t used = 0;
     for (int i = 0; i < n; i++)
     {
         const Plane &pl = planes_[i];
@@ -212,7 +259,9 @@ void LIOBuilder::pointToPlane(const kf::State &s, kf::MeasurementSystem &m)
         const double w = params_.p2plane_gain * cauchyWeight(r * r, params_.p2plane_robust_delta);
         m.H += J.transpose() * w * J;
         m.b += J.transpose() * w * r;
+        used++;
     }
+    n_planes_ = used;
 }
 
 void LIOBuilder::gicp(const kf::State &s, kf::MeasurementSystem &m)

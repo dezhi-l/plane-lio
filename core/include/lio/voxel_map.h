@@ -29,6 +29,9 @@ public:
     // Bins at 1 m (resolution_inv_ is intentionally left at 1). The hash uses 1/resolution.
     bool isSameGrid(const Eigen::Vector3d &a, const Eigen::Vector3d &b) const;
     const std::vector<Eigen::Vector3d> &searchRange() const { return delta_; }
+    // Plane of the cell nearest (by centroid) to `point` among the search cells: centroid, unit normal and
+    // planarity = lambda_min / lambda_mid of the cell covariance (small = planar). False if no valid cell.
+    bool searchPlane(const Eigen::Vector3d &point, Eigen::Vector3d &centroid, Eigen::Vector3d &normal, double &planarity);
 
 private:
     struct Grid
@@ -38,6 +41,8 @@ private:
         Eigen::Vector3d centroid = Eigen::Vector3d::Zero();
         Eigen::Matrix3d conv = Eigen::Matrix3d::Zero(), conv_sum = Eigen::Matrix3d::Zero();
         Eigen::Vector3d points_sum = Eigen::Vector3d::Zero();
+        Eigen::Vector3d normal = Eigen::Vector3d::UnitZ();
+        double planarity = 1.0;
         size_t points_num = 0, min_num = 6, max_num = 20;
         bool is_valid = false, is_updated = false;
         std::vector<Eigen::Vector3d> points;

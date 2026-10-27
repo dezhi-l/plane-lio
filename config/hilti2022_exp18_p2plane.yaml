@@ -1,0 +1,46 @@
+# Hilti 2022 Phasma: Hesai PandarXT-32 + Bosch BMI085 (lidar_calibration.yaml, quaternion xyzw)
+# Hilti 2022 exp18 (stair-climb, very sparse scans at close range) with point_to_plane.
+# voxel_plane: plane normals from voxel-cell covariance instead of 5-NN fits (kNN normals are noisy at mm spacing);
+# finer scan voxel + lower gain; degeneracy guard also flags sparse/low-information scans.
+# Robust region found by sweep: scan_resolution 0.15-0.2, p2plane_gain 3000-4500 -> odom APE 0.09-0.15 m (no loop).
+preprocess:
+  blind: 0.5            # m, drop points closer than this
+  point_stride: 1       # keep every n-th point
+
+lio:
+  residual: point_to_plane   # point_to_plane | gicp  (override: --residual)
+  scan_resolution: 0.15
+  map_resolution: 0.25
+  near_mode: 7               # voxel neighbourhood: 1 | 7 | 19 | 26
+  max_iterations: 10
+  degen_ratio: 0.01         # drop LiDAR info along eigen-directions < ratio*max (0 = off)
+  # point-to-plane
+  knn: 5
+  voxel_plane: true          # plane from voxel covariance (eigen normal, planarity gate)
+  voxel_plane_ratio: 0.1     # max lambda_min/lambda_mid for a valid cell
+  plane_thresh: 0.1          # max point-to-fitted-plane distance for a valid plane
+  p2plane_robust_delta: 0.1  # Cauchy scale (m)
+  p2plane_gain: 4500
+  # GICP (upstream baseline)
+  gicp_gain: 100
+  # IMU
+  acc_cov: 0.1
+  gyro_cov: 0.1
+  align_gravity: true
+  extrinsic_est_en: false
+  imu_ext_rot: [0, -1, 0, -1, 0, 0, 0, 0, -1]
+  imu_ext_pos: [-0.001, -0.00855, 0.055]
+
+loop_closure:
+  enable: true
+  key_dist_thresh: 1.0
+  key_rot_thresh: 0.2
+  time_thresh: 30.0
+  index_thresh: 25
+  search_radius: 10.0
+  submap_half_window: 10
+  icp_max_corr: 2.0
+  icp_fitness_thresh: 0.3
+
+# optional (off): neighbour filter for sparse scans, enable with --nfilter or:
+# lio: {neighbor_filter: {enable: true, trigger: 1000, grid: 0.5}}   (see core/include/lio/neighbor_filter.h)

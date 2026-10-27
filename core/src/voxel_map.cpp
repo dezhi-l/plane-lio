@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <Eigen/SVD>
+#include <Eigen/Eigenvalues>
 
 namespace lio
 {
@@ -54,6 +55,9 @@ void VoxelMap::Grid::updateConv()
     }
     conv = (conv_sum - points_sum * centroid.transpose()) / (static_cast<double>(points_num) - 1.0);
     is_valid = true;
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(conv);
+    normal = es.eigenvectors().col(0);
+    planarity = es.eigenvalues()[0] / std::max(es.eigenvalues()[1], 1e-12);
     conv = fixedCov(conv);
 }
 
@@ -179,6 +183,27 @@ bool VoxelMap::getCentroidAndCovariance(const Eigen::Vector3d &point, Eigen::Vec
     centroid = it->second.grid->centroid;
     cov = it->second.grid->conv;
     return true;
+}
+
+bool VoxelMap::searchPlane(const Eigen::Vector3d &point, Eigen::Vector3d &centroid, Eigen::Vector3d &normal, double &planarity)
+{
+    double best = 1e18;
+    for (const auto &d : delta_)
+    {
+        const Eigen::Vector3d q = point + d;
+        auto it = storage_.find(hash(q));
+        if (it == storage_.end() || !it->second.grid->is_valid || !isSameGrid(q, it->second.grid->centroid))
+            continue;
+        const Grid &g = *it->second.grid;
+        const double dist = (g.centroid - point).squaredNorm();
+        if (dist >= best)
+            continue;
+        best = dist;
+        centroid = g.centroid;
+        normal = g.normal;
+        planarity = g.planarity;
+    }
+    return best < 1e18;
 }
 
 FastVoxelMap::FastVoxelMap(double resolution) : resolution_(resolution), hash_inv_(1.0 / resolution)
