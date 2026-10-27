@@ -6,6 +6,7 @@
 #include "lio/imu_processor.h"
 #include "lio/voxel_map.h"
 #include "lio/dynamic_filter.h"
+#include "lio/motion_obs.h"
 
 namespace lio
 {
@@ -31,11 +32,8 @@ struct LIOParams
     // eigen-directions weaker than degen_ratio * strongest (per 3x3 trans / rot block) is dropped,
     // so the IMU prediction constrains those directions. 0 disables.
     double degen_ratio = 0.0;
-    // Wheel odometry / non-holonomic constraints on body velocity (states 12..14).
-    bool wheel_enable = false;   // use forward speed from wheel.txt when available
-    bool nhc_enable = false;     // constrain lateral & vertical body velocity to 0
-    double wheel_gain = 100.0;   // 1/sigma^2 on forward speed residual [(m/s)^-2]
-    double nhc_gain = 100.0;     // 1/sigma^2 on lateral/vertical residuals
+    // Wheel / NHC / ZUPT / bias-limit observations fused in the iterated update (see motion_obs.h).
+    MotionParams motion;
     // Online dynamic-point filter (range-image appear-in-front check) before map insert.
     DynamicFilterParams dynamic;
     // keyframe insertion into the local map
@@ -64,7 +62,7 @@ private:
     void pointToPlane(const kf::State &s, kf::MeasurementSystem &m);
     void projectDegenerate(kf::MeasurementSystem &m);
     void gicp(const kf::State &s, kf::MeasurementSystem &m);
-    void addMotionConstraints(const kf::State &s, kf::MeasurementSystem &m);
+    void updateMotionInput(const MeasureGroup &meas);
     void addJacobianExtrinsic(const kf::State &s, const Eigen::Vector3d &p_lidar, Eigen::Matrix<double, -1, 12> &J) const;
 
     struct Plane
@@ -94,15 +92,12 @@ private:
 public:
     size_t degenerate_updates = 0;
     size_t dynamic_dropped = 0;
-    void setWheelVelocity(const Eigen::Vector3d &v_body, bool valid)
-    {
-        wheel_vel_ = v_body;
-        wheel_valid_ = valid;
-    }
+    size_t zupt_scans = 0; // scans on which the wheel reported standstill and ZUPT was applied
+
 private:
     std::unique_ptr<DynamicFilter> dynamic_;
-    Eigen::Vector3d wheel_vel_ = Eigen::Vector3d::Zero();
-    bool wheel_valid_ = false;
+    MotionInput motion_in_;
+    int standstill_count_ = 0;
     std::vector<GICPCorr, Eigen::aligned_allocator<GICPCorr>> gicp_corr_;
     Eigen::Matrix3d key_rot_ = Eigen::Matrix3d::Identity();
     Eigen::Vector3d key_pos_ = Eigen::Vector3d::Zero();

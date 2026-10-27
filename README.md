@@ -28,6 +28,15 @@ Removed: localizer, ikd-tree/FAST-LIO builder, ROS services/launch/rviz. A ROS w
 plane-lio (the box it was developed on had no ROS); the library has no ROS dependency, so a thin node only
 needs to fill `lio::MeasureGroup` and call `LIOBuilder::process` / `LoopClosure::addPose`.
 
+## Wheel / motion constraints (IESKF observations)
+`core/src/motion_obs.cpp` adds, inside the same iterated update as the LiDAR residual (`kf::MeasurementSystem::add`):
+wheel forward speed + non-holonomic constraint (`--wheel --nhc`, lever-arm and scale aware, Huber IRLS), ZUPT with
+gyro-bias observation when the wheel reports standstill *and* the gyro is quiet (`--zupt`), soft bias bounds
+(`--bias-limit`), and an optional proper bias random walk in prediction (`--bias-rw`, experimental, off by default).
+All off by default (bit-identical to the previous behaviour). `tests/test_motion_obs.cpp` checks every analytic
+Jacobian against numerical differentiation (`ctest`). Design inspired by lightning-lm's "several observation types
+in one ESKF update" layout; see Credits.
+
 ## Layout
 ```
 core/      lio_core: ieskf, imu_processor, voxel_map, lio_builder (residuals)
@@ -75,3 +84,7 @@ Multi-session (0–300 s and 320–623 s as two sessions): initial alignment ICP
 MIT, see `LICENSE` (Copyright (c) 2024 liangheming). Based on iG-LIO_SAM_LC by liangheming, which builds on
 [iG-LIO](https://github.com/zijiechenrobotics/ig_lio) (Zijie Chen et al.) and
 [FAST-LIO](https://github.com/hku-mars/FAST_LIO) (HKU MARS). Dataset: IILABS 3D (INESC TEC).
+
+Wheel/motion observation design is inspired by [lightning-lm](https://github.com/gaoxiang12/lightning-lm) (Gao Xiang).
+That repository declares no license (package.xml: `TODO`) and its wheel / bias observation functions are not public,
+so no code was copied; the models in `motion_obs.cpp` are derived independently.

@@ -1,6 +1,6 @@
 // Offline LIO + loop closure.
 // usage: lio_mapping <config.yaml> <dataset_dir> <out_dir> [--residual point_to_plane|gicp]
-//                    [--start s] [--end s] [--degen ratio] [--wheel] [--nhc] [--dynamic] [--no-loop]
+//                    [--start s] [--end s] [--degen ratio] [--wheel] [--nhc] [--zupt] [--bias-limit] [--bias-rw] [--dynamic] [--no-loop]
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -31,6 +31,39 @@ struct Job
     int stride = 3;
 };
 
+// Wheel / NHC / ZUPT / bias-limit keys under `lio:` (all optional).
+void loadMotion(const YAML::Node &l, MotionParams &m)
+{
+    get(l, "wheel_enable", m.wheel_enable);
+    get(l, "nhc_enable", m.nhc_enable);
+    get(l, "wheel_gain", m.wheel_gain);
+    get(l, "nhc_gain", m.nhc_gain);
+    get(l, "wheel_scale", m.wheel_scale);
+    get(l, "wheel_max_dt", m.wheel_max_dt);
+    get(l, "motion_huber", m.huber_k);
+    get(l, "zupt_enable", m.zupt_enable);
+    get(l, "zupt_speed", m.zupt_speed);
+    get(l, "zupt_count", m.zupt_count);
+    get(l, "zupt_gyro_thresh", m.zupt_gyro_thresh);
+    get(l, "zupt_vel_gain", m.zupt_vel_gain);
+    get(l, "zupt_gyro_gain", m.zupt_gyro_gain);
+    get(l, "zupt_acc_gain", m.zupt_acc_gain);
+    get(l, "bias_limit_enable", m.bias_limit_enable);
+    get(l, "bg_max", m.bg_max);
+    get(l, "ba_max", m.ba_max);
+    get(l, "bias_limit_gain", m.bias_limit_gain);
+    if (l && l["wheel_ext_rot"])
+    {
+        auto r = l["wheel_ext_rot"].as<std::vector<double>>(); // wheel/base -> IMU, row-major
+        m.ext_rot = Eigen::Map<Eigen::Matrix<double, 3, 3, Eigen::RowMajor>>(r.data());
+    }
+    if (l && l["wheel_ext_pos"])
+    {
+        auto t = l["wheel_ext_pos"].as<std::vector<double>>();
+        m.ext_pos = Eigen::Vector3d(t[0], t[1], t[2]);
+    }
+}
+
 void loadLio(const YAML::Node &l, Job &job)
 {
     get(l, "residual", job.residual);
@@ -43,10 +76,7 @@ void loadLio(const YAML::Node &l, Job &job)
     get(l, "knn", job.lp.knn);
     get(l, "gicp_gain", job.lp.gicp_gain);
     get(l, "degen_ratio", job.lp.degen_ratio);
-    get(l, "wheel_enable", job.lp.wheel_enable);
-    get(l, "nhc_enable", job.lp.nhc_enable);
-    get(l, "wheel_gain", job.lp.wheel_gain);
-    get(l, "nhc_gain", job.lp.nhc_gain);
+    loadMotion(l, job.lp.motion);
     if (l && l["dynamic"])
     {
         get(l["dynamic"], "enable", job.lp.dynamic.enable);
@@ -61,6 +91,9 @@ void loadLio(const YAML::Node &l, Job &job)
     job.lp.near_mode = mode == 7 ? VoxelMap::NEARBY_7 : mode == 19 ? VoxelMap::NEARBY_19 : mode == 26 ? VoxelMap::NEARBY_26 : VoxelMap::NEARBY_1;
     get(l, "acc_cov", job.lp.imu_noise.acc_cov);
     get(l, "gyro_cov", job.lp.imu_noise.gyro_cov);
+    get(l, "acc_bias_cov", job.lp.imu_noise.acc_bias_cov);
+    get(l, "gyro_bias_cov", job.lp.imu_noise.gyro_bias_cov);
+    get(l, "bias_random_walk", job.lp.imu_noise.proper_bias_rw);
     if (l && l["imu_ext_rot"])
     {
         auto r = l["imu_ext_rot"].as<std::vector<double>>();
@@ -100,9 +133,15 @@ void applyCli(int argc, char **argv, Job &job)
         else if (a == "--degen" && i + 1 < argc)
             job.lp.degen_ratio = std::stod(argv[++i]);
         else if (a == "--wheel")
-            job.lp.wheel_enable = true;
+            job.lp.motion.wheel_enable = true;
         else if (a == "--nhc")
-            job.lp.nhc_enable = true;
+            job.lp.motion.nhc_enable = true;
+        else if (a == "--zupt")
+            job.lp.motion.zupt_enable = true;
+        else if (a == "--bias-limit")
+            job.lp.motion.bias_limit_enable = true;
+        else if (a == "--bias-rw")
+            job.lp.imu_noise.proper_bias_rw = true;
         else if (a == "--dynamic")
             job.lp.dynamic.enable = true;
         else if (a == "--no-loop")
@@ -150,7 +189,7 @@ int main(int argc, char **argv)
 {
     if (argc < 4)
     {
-        std::cerr << "usage: lio_mapping <config.yaml> <dataset_dir> <out_dir> [--residual r] [--start s] [--end s] [--degen ratio] [--wheel] [--nhc] [--dynamic] [--no-loop]\n";
+        std::cerr << "usage: lio_mapping <config.yaml> <dataset_dir> <out_dir> [--residual r] [--start s] [--end s] [--degen ratio] [--wheel] [--nhc] [--zupt] [--bias-limit] [--bias-rw] [--dynamic] [--no-loop]\n";
         return 1;
     }
     const Job job = loadJob(argc, argv);
@@ -171,10 +210,6 @@ int main(int argc, char **argv)
             continue;
         if (rel > job.end)
             break;
-        if (!mg.wheels.empty())
-            lio.setWheelVelocity(mg.wheels.back().vel, true);
-        else
-            lio.setWheelVelocity(Eigen::Vector3d::Zero(), false);
         const auto tic = std::chrono::steady_clock::now();
         if (!lio.process(mg))
             continue;
@@ -189,6 +224,8 @@ int main(int argc, char **argv)
     }
     writeOutputs(job.out, job.residual, odom, global, loop, lio_ms, n_scans);
     std::cout << "degenerate_updates " << lio.degenerate_updates
-              << " dynamic_dropped " << lio.dynamic_dropped << '\n';
+              << " dynamic_dropped " << lio.dynamic_dropped << " zupt_scans " << lio.zupt_scans << '\n';
+    const auto &fs = lio.state();
+    std::cout << "final_bg " << fs.bg.transpose() << " final_ba " << fs.ba.transpose() << '\n';
     return 0;
 }

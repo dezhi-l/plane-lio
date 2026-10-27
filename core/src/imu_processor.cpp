@@ -13,6 +13,7 @@ IMUProcessor::IMUProcessor(std::shared_ptr<kf::IESKF> kf, const ImuNoise &n,
     Q_.block<3, 3>(3, 3).diagonal().setConstant(n.acc_cov);
     Q_.block<3, 3>(6, 6).diagonal().setConstant(n.gyro_bias_cov);
     Q_.block<3, 3>(9, 9).diagonal().setConstant(n.acc_bias_cov);
+    kf_->setProperBiasRandomWalk(n.proper_bias_rw);
 }
 
 void IMUProcessor::init(const MeasureGroup &meas)

@@ -10,6 +10,7 @@ namespace lio
 struct ImuNoise
 {
     double acc_cov = 0.01, gyro_cov = 0.01, acc_bias_cov = 1e-4, gyro_bias_cov = 1e-4;
+    bool proper_bias_rw = false; // continuous random walk: bias variance grows as cov*dt (default: cov*dt^2)
 };
 
 class IMUProcessor
@@ -20,6 +21,8 @@ public:
 
     // False while initialising. On success `out` is the scan de-skewed into the end-of-scan LiDAR frame.
     bool process(const MeasureGroup &meas, PointCloud::Ptr &out);
+    // Factor converting raw accelerometer units (g or m/s^2) to m/s^2; 1 until initialised.
+    double accScale() const { return mean_acc_.norm() > 1e-6 ? kf::GRAVITY / mean_acc_.norm() : 1.0; }
 
 private:
     struct ImuPose

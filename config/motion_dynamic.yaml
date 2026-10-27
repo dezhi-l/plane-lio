@@ -1,12 +1,11 @@
-# Enable wheel/NHC + dynamic filter on top of a base mid360/hilti config (merge manually or include keys under lio:).
-# Example fragment — copy these keys under `lio:` of your sequence config.
-#   wheel_enable: true
-#   nhc_enable: true
-#   wheel_gain: 100
-#   nhc_gain: 100
-#   dynamic:
-#     enable: true
-#     appear_thresh: 0.8
+# Wheel / NHC / ZUPT / bias-limit / bias-random-walk + dynamic filter on top of a base config (keys go under `lio:`).
+# All motion terms are observations in the IESKF measurement update (core/src/motion_obs.cpp), fused with the LiDAR residual.
+# CLI flags --wheel --nhc --zupt --bias-limit --bias-rw override the yaml switches.
+#   wheel_enable / nhc_enable: true      wheel_gain / nhc_gain: 100 (1/sigma^2, (m/s)^-2)
+#   wheel_scale: 1.0   wheel_max_dt: 0.5   wheel_ext_rot: [9]   wheel_ext_pos: [3]   (wheel/base -> IMU)
+#   zupt_enable: false  zupt_speed: 0.05  zupt_count: 5  zupt_gyro_thresh: 0.02  zupt_vel_gain/zupt_gyro_gain: 1e4  zupt_acc_gain: 0
+#   bias_limit_enable: false  bg_max: 0.2  ba_max: 1.0  bias_limit_gain: 1e4
+#   bias_random_walk: false  (proper continuous bias RW; then gyro_bias_cov/acc_bias_cov are PSD, use ~1e-6..1e-7, not 1e-4)
 preprocess:
   blind: 0.5
   point_stride: 1

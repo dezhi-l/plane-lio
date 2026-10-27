@@ -1,4 +1,5 @@
 #include "lio/ieskf.h"
+#include <cmath>
 #include <sophus/so3.hpp>
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
@@ -75,6 +76,20 @@ Matrix3x2d State::getMx(const Eigen::Vector2d &res) const
 
 Matrix2x3d State::getNx() const { return 1 / GRAVITY / GRAVITY * getBx().transpose() * Hat(g); }
 
+void MeasurementSystem::add(const Observation &o, double huber_k)
+{
+    for (Eigen::Index i = 0; i < o.r.size(); i++)
+    {
+        double w = o.w[i];
+        const double z = std::fabs(o.r[i]) * std::sqrt(w); // normalised residual
+        if (huber_k > 0 && z > huber_k)
+            w *= huber_k / z;
+        const Eigen::Matrix<double, 1, 23> Ji = o.J.row(i);
+        H_full.noalias() += w * Ji.transpose() * Ji;
+        b_full.noalias() += w * o.r[i] * Ji.transpose();
+    }
+}
+
 void IESKF::predict(const Input &inp, double dt, const Matrix12d &Q)
 {
     const Eigen::Vector3d w = (inp.gyro - x_.bg) * dt;
@@ -95,8 +110,9 @@ void IESKF::predict(const Input &inp, double dt, const Matrix12d &Q)
     Matrix23x12d G = Matrix23x12d::Zero();
     G.block<3, 3>(3, 0) = -Jr(w) * dt;
     G.block<3, 3>(12, 3) = -x_.rot * dt;
-    G.block<3, 3>(15, 6) = Eigen::Matrix3d::Identity() * dt;
-    G.block<3, 3>(18, 9) = Eigen::Matrix3d::Identity() * dt;
+    const double g_bias = proper_bias_rw_ ? std::sqrt(dt) : dt;
+    G.block<3, 3>(15, 6) = Eigen::Matrix3d::Identity() * g_bias;
+    G.block<3, 3>(18, 9) = Eigen::Matrix3d::Identity() * g_bias;
     x_ += delta;
     P_ = F * P_ * F.transpose() + G * Q * G.transpose();
 }
@@ -112,10 +128,7 @@ void IESKF::update()
     {
         meas.H.setZero();
         meas.b.setZero();
-        meas.H_vel.setZero();
-        meas.b_vel.setZero();
-        meas.H_rot_vel.setZero();
-        meas.b_rot.setZero();
+        meas.clearFull();
         func_(x_, meas);
         delta = x_ - x_pred;
         Matrix23d J = Matrix23d::Identity();
@@ -126,12 +139,8 @@ void IESKF::update()
         Vector23d b = J.transpose() * P_inv * delta;
         H.block<12, 12>(0, 0) += meas.H;
         b.head<12>() += meas.b;
-        // Wheel / NHC velocity factors (states 12..14) and their coupling to rot (3..5).
-        H.block<3, 3>(12, 12) += meas.H_vel;
-        b.segment<3>(12) += meas.b_vel;
-        H.block<3, 3>(3, 12) += meas.H_rot_vel;
-        H.block<3, 3>(12, 3) += meas.H_rot_vel.transpose();
-        b.segment<3>(3) += meas.b_rot;
+        H += meas.H_full;
+        b += meas.b_full;
         delta = -H.ldlt().solve(b);
         x_ += delta;
         meas.iter_num++;

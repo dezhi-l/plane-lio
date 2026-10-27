@@ -26,6 +26,7 @@ find_package(OpenMP)
 # --- lio_core: ROS-free LiDAR-inertial odometry (IESKF + voxel map + residuals)
 add_library(lio_core
   core/src/ieskf.cpp
+  core/src/motion_obs.cpp
   core/src/imu_processor.cpp
   core/src/voxel_map.cpp
   core/src/lio_builder.cpp)
@@ -52,3 +53,9 @@ add_executable(lio_mapping apps/lio_mapping.cpp)
 target_link_libraries(lio_mapping lio_mapping_lib yaml-cpp)
 add_executable(map_merge apps/map_merge.cpp)
 target_link_libraries(map_merge lio_mapping_lib)
+
+# --- unit check: analytic observation Jacobians vs numerical differentiation
+enable_testing()
+add_executable(test_motion_obs tests/test_motion_obs.cpp)
+target_link_libraries(test_motion_obs lio_core)
+add_test(NAME motion_obs_jacobian COMMAND test_motion_obs)

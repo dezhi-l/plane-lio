@@ -1,4 +1,5 @@
 #include "lio/lio_builder.h"
+#include <algorithm>
 #include <stdexcept>
 #include <sophus/so3.hpp>
 #include <Eigen/Eigenvalues>
@@ -65,6 +66,7 @@ LIOBuilder::LIOBuilder(const LIOParams &p) : params_(p)
 
 bool LIOBuilder::process(const MeasureGroup &meas)
 {
+    updateMotionInput(meas);
     if (!imu_->process(meas, cloud_lidar_))
         return false;
     // Range-image dynamic filter in body frame before the first map insert / matching.
@@ -106,48 +108,35 @@ void LIOBuilder::measurement(const kf::State &s, kf::MeasurementSystem &m)
         pointToPlane(s, m);
     if (params_.degen_ratio > 0)
         projectDegenerate(m);
-    if (params_.wheel_enable || params_.nhc_enable)
-        addMotionConstraints(s, m);
+    addMotionObservations(s, params_.motion, motion_in_, m);
 }
 
-// Body-frame velocity residual: r = R^T v - v_ref.
-// Wheel: v_ref.x = wheel speed; NHC: v_ref.y = v_ref.z = 0 (and optionally x free).
-// Right-multiplicative rot error => J_rot = hat(v_body), J_vel = R^T.
-void LIOBuilder::addMotionConstraints(const kf::State &s, kf::MeasurementSystem &m)
+// Wheel / NHC / ZUPT inputs for this scan: wheel sample nearest the scan end (if fresh enough),
+// standstill = |wheel speed| < zupt_speed for zupt_count consecutive samples, mean IMU over the scan.
+void LIOBuilder::updateMotionInput(const MeasureGroup &meas)
 {
-    const Eigen::Vector3d v_body = s.rot.transpose() * s.vel;
-    Eigen::Vector3d v_ref = v_body;
-    Eigen::Vector3d w = Eigen::Vector3d::Zero(); // per-axis information
-    if (params_.nhc_enable)
+    const MotionParams &mp = params_.motion;
+    motion_in_.wheel_valid = false;
+    double gyro_dev = 0.0; // largest |gyro - bg| in the scan: in-place turns give wheel v = 0 but gyro != 0
+    motion_in_.gyro.setZero();
+    motion_in_.acc.setZero();
+    for (const auto &imu : meas.imus)
     {
-        v_ref.y() = 0.0;
-        v_ref.z() = 0.0;
-        w.y() = params_.nhc_gain;
-        w.z() = params_.nhc_gain;
+        motion_in_.gyro += imu.gyro / double(meas.imus.size());
+        motion_in_.acc += imu.acc / double(meas.imus.size());
+        gyro_dev = std::max(gyro_dev, (imu.gyro - kf_->x().bg).norm());
     }
-    if (params_.wheel_enable && wheel_valid_)
+    motion_in_.acc *= imu_->accScale();
+    const bool still_gyro = !meas.imus.empty() && gyro_dev < mp.zupt_gyro_thresh;
+    for (const auto &w : meas.wheels)
+        standstill_count_ = w.vel.norm() * mp.wheel_scale < mp.zupt_speed && still_gyro ? standstill_count_ + 1 : 0;
+    if (!meas.wheels.empty() && meas.lidar_time_end - meas.wheels.back().timestamp <= mp.wheel_max_dt)
     {
-        v_ref.x() = wheel_vel_.x();
-        w.x() = params_.wheel_gain;
+        motion_in_.wheel_vel = meas.wheels.back().vel;
+        motion_in_.wheel_valid = true;
     }
-    if (w.norm() < 1e-12)
-        return;
-    const Eigen::Vector3d r = v_body - v_ref;
-    const Eigen::Matrix3d J_vel = s.rot.transpose();          // dr / d v_world
-    const Eigen::Matrix3d J_rot = Sophus::SO3d::hat(v_body);  // dr / d theta (right)
-    for (int i = 0; i < 3; i++)
-    {
-        if (w[i] < 1e-12)
-            continue;
-        const Eigen::RowVector3d Ji_v = J_vel.row(i);
-        const Eigen::RowVector3d Ji_r = J_rot.row(i);
-        m.H_vel += w[i] * Ji_v.transpose() * Ji_v;
-        m.b_vel += w[i] * Ji_v.transpose() * r[i];
-        m.H_rot_vel += w[i] * Ji_r.transpose() * Ji_v; // rot rows, vel cols
-        m.b_rot += w[i] * Ji_r.transpose() * r[i];
-        // Also accumulate rot-rot block into the LiDAR H (cols/rows 3..5 of the 12x12).
-        m.H.block<3, 3>(3, 3) += w[i] * Ji_r.transpose() * Ji_r;
-    }
+    motion_in_.standstill = motion_in_.wheel_valid && standstill_count_ >= mp.zupt_count;
+    zupt_scans += mp.zupt_enable && motion_in_.standstill;
 }
 
 void LIOBuilder::projectDegenerate(kf::MeasurementSystem &m)
